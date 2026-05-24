@@ -1,0 +1,151 @@
+{
+  "function": {
+    "prefix": "fn",
+    "body": [
+      "(fn ${1:name} (${2:args})",
+      "    ${0:body}",
+      ")"
+    ],
+    "description": "Named function definition"
+  },
+  "lambda": {
+    "prefix": "lambda",
+    "body": [
+      "(lambda (${1:args})",
+      "    ${0:body}",
+      ")"
+    ],
+    "description": "Anonymous function"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "(if ${1:cond}",
+      "    ${2:then}",
+      "    ${0:else})"
+    ],
+    "description": "If / else expression"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "(while ${1:cond}",
+      "    (do",
+      "        ${0:body}",
+      "    )",
+      ")"
+    ],
+    "description": "While loop"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "(for ${1:item} ${2:items}",
+      "    ${0:body}",
+      ")"
+    ],
+    "description": "For-each loop"
+  },
+  "do": {
+    "prefix": "do",
+    "body": [
+      "(do",
+      "    ${0:body}",
+      ")"
+    ],
+    "description": "Sequential block"
+  },
+  "set": {
+    "prefix": "set",
+    "body": [
+      "(set ${1:name} ${0:value})"
+    ],
+    "description": "Define / assign a variable"
+  },
+  "try": {
+    "prefix": "try",
+    "body": [
+      "(try",
+      "    ${1:body}",
+      "    (catch ${2:err}",
+      "        ${0:handler}",
+      "    )",
+      ")"
+    ],
+    "description": "Try / catch error handling"
+  },
+  "object": {
+    "prefix": "obj",
+    "body": [
+      "(object",
+      "    \"${1:key}\" ${0:value}",
+      ")"
+    ],
+    "description": "Object literal"
+  },
+  "array": {
+    "prefix": "arr",
+    "body": [
+      "(array ${0:items})"
+    ],
+    "description": "Array literal"
+  },
+  "print": {
+    "prefix": "print",
+    "body": [
+      "(print ${0:value})"
+    ],
+    "description": "Print to stdout"
+  },
+  "fn map": {
+    "prefix": "map",
+    "body": [
+      "(map (lambda (${1:x}) ${2:expr}) ${0:coll})"
+    ],
+    "description": "Map a lambda over a collection"
+  },
+  "fn filter": {
+    "prefix": "filter",
+    "body": [
+      "(filter (lambda (${1:x}) ${2:cond}) ${0:coll})"
+    ],
+    "description": "Filter a collection by a predicate"
+  },
+  "fn reduce": {
+    "prefix": "reduce",
+    "body": [
+      "(reduce (lambda (${1:acc} ${2:x}) ${3:expr}) ${4:coll} ${0:init})"
+    ],
+    "description": "Reduce a collection to a single value"
+  },
+  "main program": {
+    "prefix": "main",
+    "body": [
+      "(do",
+      "    ${0}",
+      ")"
+    ],
+    "description": "Top-level do-block scaffold"
+  },
+  "json parse": {
+    "prefix": "jparse",
+    "body": [
+      "(json:parse ${0:text})"
+    ],
+    "description": "Parse a JSON string"
+  },
+  "json stringify": {
+    "prefix": "jstr",
+    "body": [
+      "(json:stringify ${0:value})"
+    ],
+    "description": "Serialise a value to JSON"
+  },
+  "run command": {
+    "prefix": "run",
+    "body": [
+      "(run \"${0:cmd}\")"
+    ],
+    "description": "Run a shell command — returns {stdout, code}"
+  }
+}
