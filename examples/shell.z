@@ -1,0 +1,24 @@
+; Running shell commands from z.
+;
+;   z examples/shell.z one two three
+;
+; (argv) returns the args you passed in:  ["one" "two" "three"]
+; (exec ...) returns combined stdout+stderr as a string.
+; (run  ...) returns an object {stdout, code}, useful when you care
+;            whether the command succeeded.
+
+(print "args you passed:" (argv))
+
+(set today (trim (exec "date +%Y-%m-%d")))
+(print "today is" today)
+
+(set result (run "ls -1 examples"))
+(print "ls exit code:" (get result "code"))
+(print "ls files:")
+(for f (split "\n" (trim (get result "stdout")))
+    (print "  -" f)
+)
+
+; A failing command — code is non-zero, no exception is thrown.
+(set bad (run "false"))
+(print "false exited with" (get bad "code"))

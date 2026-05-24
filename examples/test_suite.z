@@ -1,0 +1,162 @@
+; A small self-checking test suite. Exits non-zero on failure.
+
+(set passed 0)
+(set failed 0)
+
+(fn check (label cond)
+    (if cond
+        (do
+            (set passed (+ passed 1))
+            (print "  ok " label)
+        )
+        (do
+            (set failed (+ failed 1))
+            (print "FAIL " label)
+        )
+    )
+)
+
+; --- arithmetic ---
+(check "add"   (== (+ 1 2 3)       6))
+(check "sub"   (== (- 10 3 2)      5))
+(check "mul"   (== (* 2 3 4)      24))
+(check "div"   (== (/ 12 4)        3))
+(check "mod"   (== (% 10 3)        1))
+(check "neg"   (== (- 5)          -5))
+
+; --- comparison ---
+(check "lt"   (< 1 2))
+(check "gt"   (> 2 1))
+(check "eq"   (== "abc" "abc"))
+(check "ne"   (!= 1 2))
+
+; --- logical ---
+(check "and-true"  (&& true true))
+(check "and-false" (! (&& true false)))
+(check "or-true"   (|| false true))
+(check "not"       (! false))
+
+; --- if ---
+(check "if-true"  (== (if true  "y" "n") "y"))
+(check "if-false" (== (if false "y" "n") "n"))
+
+; --- variables ---
+(set x 42)
+(check "set/get-var" (== x 42))
+
+; --- arrays ---
+(set xs (array 10 20 30))
+(check "arr-len"   (== (length xs) 3))
+(check "arr-get0"  (== (get xs 0) 10))
+(check "arr-get2"  (== (get xs 2) 30))
+(check "arr-neg"   (== (get xs -1) 30))
+(push xs 40)
+(check "arr-push"  (== (length xs) 4))
+(check "arr-pop"   (== (pop xs) 40))
+(check "arr-after-pop" (== (length xs) 3))
+
+; --- objects ---
+(set u (object "name" "vivek" "age" 30))
+(check "obj-get-name" (== (get u "name") "vivek"))
+(check "obj-get-age" (== (get u "age") 30))
+(put u "age" 31)
+(check "obj-put"     (== (get u "age") 31))
+(check "obj-keys"    (== (length (keys u)) 2))
+
+; --- strings ---
+(check "concat"   (== (concat "ab" "cd") "abcd"))
+(check "upper"    (== (upper "abc") "ABC"))
+(check "lower"    (== (lower "ABC") "abc"))
+(check "trim"     (== (trim "  hi  ") "hi"))
+(check "replace"  (== (replace "hello world" "world" "z") "hello z"))
+(check "substring" (== (substring "abcdef" 1 4) "bcd"))
+(check "split"    (== (length (split "," "a,b,c,d")) 4))
+
+; --- higher-order ---
+(set doubled (map (lambda (x) (* x 2)) (array 1 2 3)))
+(check "map"    (== (get doubled 1) 4))
+(set evens (filter (lambda (x) (== (% x 2) 0)) (array 1 2 3 4 5)))
+(check "filter" (== (length evens) 2))
+(check "reduce" (== (reduce (lambda (a b) (+ a b)) (array 1 2 3 4 5)) 15))
+
+; --- while ---
+(set sum 0)
+(set i 0)
+(while (< i 5)
+    (do
+        (set sum (+ sum i))
+        (set i (+ i 1))
+    )
+)
+(check "while" (== sum 10))
+
+; --- for ---
+(set total 0)
+(for n (array 1 2 3 4)
+    (set total (+ total n))
+)
+(check "for-array" (== total 10))
+
+; --- try/catch ---
+(set caught false)
+(try
+    (/ 1 0)
+    (catch err
+        (set caught true)
+    )
+)
+(check "try-catch" caught)
+
+; --- recursion / closures ---
+(fn make-counter ()
+    (do
+        (set n 0)
+        (lambda ()
+            (do
+                (set n (+ n 1))
+                n
+            )
+        )
+    )
+)
+(set c (make-counter))
+(check "closure-1" (== (c) 1))
+(check "closure-2" (== (c) 2))
+(check "closure-3" (== (c) 3))
+
+; --- JSON ---
+(set j (json:parse "{\"a\":1,\"b\":[2,3]}"))
+(check "json-parse-a"  (== (get j "a") 1))
+(check "json-parse-b1" (== (get j "b" 1) 3))
+(set s (json:stringify (object "x" 1 "y" (array 2 3))))
+(check "json-stringify" (== s "{\"x\":1,\"y\":[2,3]}"))
+
+; --- math ---
+(check "min"   (== (min 3 1 2) 1))
+(check "max"   (== (max 3 1 2) 3))
+(check "floor" (== (floor 3.7) 3))
+(check "ceil"  (== (ceil 3.2) 4))
+(check "abs"   (== (abs -5) 5))
+
+; --- type ---
+(check "type-num"  (== (type 5) "number"))
+(check "type-str"  (== (type "x") "string"))
+(check "type-bool" (== (type true) "boolean"))
+(check "type-null" (== (type null) "null"))
+(check "type-arr"  (== (type (array)) "array"))
+(check "type-obj"  (== (type (object)) "object"))
+
+; --- shell / run / argv ---
+(check "exec-basic" (== (trim (exec "echo hello")) "hello"))
+(set ok (run "echo z-rocks"))
+(check "run-stdout" (== (trim (get ok "stdout")) "z-rocks"))
+(check "run-code-0" (== (get ok "code") 0))
+(set bad (run "false"))
+(check "run-code-nonzero" (!= (get bad "code") 0))
+(check "argv-is-array" (== (type (argv)) "array"))
+
+; --- summary ---
+(print "")
+(print "passed:" passed)
+(print "failed:" failed)
+(if (> failed 0) (exit 1))

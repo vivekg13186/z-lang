@@ -1,0 +1,20 @@
+; The example program straight from the spec.
+(do
+    (set users
+        (array
+            (object "name" "Alice" "age" 20)
+            (object "name" "Bob"   "age" 15)
+        )
+    )
+
+    (for user users
+        (if (> (get user "age") 18)
+            (print
+                (concat
+                    (get user "name")
+                    " is adult"
+                )
+            )
+        )
+    )
+)

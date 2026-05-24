@@ -1,0 +1,15 @@
+; JSON parse / stringify roundtrip.
+
+(set raw "{\"name\":\"vivek\",\"skills\":[\"c\",\"lisp\",\"workflow\"],\"age\":30}")
+(set obj (json:parse raw))
+
+(print "name:" (get obj "name"))
+(print "first skill:" (get obj "skills" 0))
+(print "keys:" (keys obj))
+
+(set obj2 (object
+    "ok" true
+    "count" 3
+    "items" (array 1 2 3)
+))
+(print (json:stringify obj2))
