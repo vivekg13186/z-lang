@@ -1,0 +1,43 @@
+; String membership and search.
+
+(set s "hello world")
+
+; --- starts-with / ends-with ---
+(print "starts hello?:" (starts-with s "hello"))
+(print "starts world?:" (starts-with s "world"))
+(print "ends   world?:" (ends-with   s "world"))
+
+; --- contains: strings, arrays, objects ---
+(print "string has lo wo? :" (contains s "lo wo"))
+(print "array  has 20?    :" (contains (array 10 20 30) 20))
+(print "object has 'age'? :" (contains (object "name" "vivek" "age" 30) "age"))
+
+; --- index-of: -1 when not found ---
+(print "where is world?:" (index-of s "world"))
+(print "where is zzz?  :" (index-of s "zzz"))
+(print "index of 'b':"    (index-of (array "a" "b" "c") "b"))
+
+; --- practical example: filter URLs by host ---
+(set urls (array
+    "https://example.com/a"
+    "https://docs.anthropic.com"
+    "https://example.com/b"
+    "https://other.org"
+))
+(set example (filter (lambda (u) (starts-with u "https://example.com")) urls))
+(print "example.com urls:" example)
+
+; --- routing on file extensions ---
+(fn handle (path)
+    (if (ends-with path ".json") "parse as JSON"
+        (if (ends-with path ".z")    "run as z script"
+            (if (ends-with path ".md")   "render as markdown"
+                "unknown"
+            )
+        )
+    )
+)
+(print (handle "data.json"))
+(print (handle "script.z"))
+(print (handle "README.md"))
+(print (handle "image.png"))

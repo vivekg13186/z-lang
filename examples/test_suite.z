@@ -146,6 +146,23 @@
 (check "type-arr"  (== (type (array)) "array"))
 (check "type-obj"  (== (type (object)) "object"))
 
+; --- string membership ---
+(check "starts-with-true"   (starts-with "hello world" "hello"))
+(check "starts-with-false"  (! (starts-with "hello world" "world")))
+(check "starts-with-empty"  (starts-with "anything" ""))
+(check "ends-with-true"     (ends-with "hello world" "world"))
+(check "ends-with-false"    (! (ends-with "hello world" "hello")))
+(check "contains-str-true"  (contains "hello world" "lo wo"))
+(check "contains-str-false" (! (contains "hello world" "zzz")))
+(check "contains-arr"       (contains (array 10 20 30) 20))
+(check "contains-arr-no"    (! (contains (array 10 20 30) 99)))
+(check "contains-obj-key"   (contains (object "name" "v" "age" 30) "age"))
+(check "contains-obj-no"    (! (contains (object "name" "v") "missing")))
+(check "index-of-str"       (== (index-of "hello world" "world") 6))
+(check "index-of-str-miss"  (== (index-of "hello" "z") -1))
+(check "index-of-arr"       (== (index-of (array "a" "b" "c") "b") 1))
+(check "index-of-arr-miss"  (== (index-of (array 1 2 3) 99) -1))
+
 ; --- shell / run / argv ---
 (check "exec-basic" (== (trim (exec "echo hello")) "hello"))
 (set ok (run "echo z-rocks"))

@@ -37,14 +37,19 @@
 #if defined(_WIN32)
 #  include <windows.h>
 #  include <io.h>
+#  include <conio.h>
 #  ifndef popen
 #    define popen  _popen
 #    define pclose _pclose
+#  endif
+#  ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#    define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #  endif
 #else
 #  include <unistd.h>
 #  include <sys/time.h>
 #  include <sys/wait.h>
+#  include <termios.h>
 #endif
 
 /* ============================================================
@@ -1435,6 +1440,80 @@ static Value* b_replace(int argc, Value** argv, Env* e) {
     (void)out_len;
     return v_str_take(out);
 }
+static Value* b_starts_with(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("starts_with", 2);
+    const char* s = str_arg(argv[0], "starts_with");
+    const char* p = str_arg(argv[1], "starts_with");
+    size_t sl = strlen(s), pl = strlen(p);
+    if (pl > sl) return v_false();
+    return v_bool(memcmp(s, p, pl) == 0);
+}
+
+static Value* b_ends_with(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("ends_with", 2);
+    const char* s = str_arg(argv[0], "ends_with");
+    const char* p = str_arg(argv[1], "ends_with");
+    size_t sl = strlen(s), pl = strlen(p);
+    if (pl > sl) return v_false();
+    return v_bool(memcmp(s + sl - pl, p, pl) == 0);
+}
+
+/* (contains container needle)
+ *   string  → does it contain the substring?
+ *   array   → does any element equal needle?
+ *   object  → does it have that key? (needle must be a string)
+ */
+static Value* b_contains(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("contains", 2);
+    Value* container = argv[0];
+    Value* needle    = argv[1];
+    if (container->type == V_STR) {
+        if (needle->type != V_STR)
+            z_raise("contains: needle must be a string when container is a string");
+        return v_bool(strstr(container->as.s, needle->as.s) != NULL);
+    }
+    if (container->type == V_ARRAY || container->type == V_LIST) {
+        for (size_t i = 0; i < container->as.list.len; i++)
+            if (value_equals(container->as.list.items[i], needle)) return v_true();
+        return v_false();
+    }
+    if (container->type == V_OBJECT) {
+        if (needle->type != V_STR)
+            z_raise("contains: object key must be a string");
+        return v_bool(obj_index(&container->as.obj, needle->as.s) >= 0);
+    }
+    z_raise("contains: unsupported type %s", type_name(container));
+    return v_false();
+}
+
+/* (index_of container needle)
+ *   string  → byte index of the first match, or -1
+ *   array   → index of the first equal element, or -1
+ */
+static Value* b_index_of(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("index_of", 2);
+    Value* container = argv[0];
+    Value* needle    = argv[1];
+    if (container->type == V_STR) {
+        if (needle->type != V_STR)
+            z_raise("index_of: needle must be a string when container is a string");
+        const char* hit = strstr(container->as.s, needle->as.s);
+        return v_num(hit ? (double)(hit - container->as.s) : -1.0);
+    }
+    if (container->type == V_ARRAY || container->type == V_LIST) {
+        for (size_t i = 0; i < container->as.list.len; i++)
+            if (value_equals(container->as.list.items[i], needle))
+                return v_num((double)i);
+        return v_num(-1);
+    }
+    z_raise("index_of: unsupported type %s", type_name(container));
+    return v_num(-1);
+}
+
 static Value* b_substring(int argc, Value** argv, Env* e) {
     (void)e;
     if (argc != 2 && argc != 3) z_raise("substring: expected (substring s start [end])");
@@ -1861,8 +1940,12 @@ static void install_builtins(Env* env) {
     env_define(env, "trim",      v_native(b_trim));
     env_define(env, "lower",     v_native(b_lower));
     env_define(env, "upper",     v_native(b_upper));
-    env_define(env, "replace",   v_native(b_replace));
-    env_define(env, "substring", v_native(b_substring));
+    env_define(env, "replace",     v_native(b_replace));
+    env_define(env, "substring",   v_native(b_substring));
+    env_define(env, "starts-with", v_native(b_starts_with));
+    env_define(env, "ends-with",   v_native(b_ends_with));
+    env_define(env, "contains",    v_native(b_contains));
+    env_define(env, "index-of",    v_native(b_index_of));
     /* core */
     env_define(env, "print",  v_native(b_print));
     env_define(env, "type",   v_native(b_type));
@@ -1921,23 +2004,358 @@ static char* read_file_all(const char* path) {
     return buf;
 }
 
+/* ============================================================
+ * REPL line editor with arrow-key history (cross-platform)
+ * ============================================================ */
+
+#define Z_HIST_MAX 1000
+#define Z_LINE_MAX 8192
+
+typedef struct {
+    char* lines[Z_HIST_MAX];
+    int   count;       /* current entries (max Z_HIST_MAX) */
+    int   first;       /* index of oldest entry — ring buffer */
+} History;
+
+static History g_history;
+
+static const char* hist_get(int idx) {
+    if (idx < 0 || idx >= g_history.count) return NULL;
+    return g_history.lines[(g_history.first + idx) % Z_HIST_MAX];
+}
+
+static void hist_add(const char* line) {
+    if (!line || !*line) return;
+    /* dedup against most recent */
+    if (g_history.count > 0) {
+        const char* last = hist_get(g_history.count - 1);
+        if (last && strcmp(last, line) == 0) return;
+    }
+    if (g_history.count < Z_HIST_MAX) {
+        int idx = (g_history.first + g_history.count) % Z_HIST_MAX;
+        g_history.lines[idx] = str_dup(line);
+        g_history.count++;
+    } else {
+        free(g_history.lines[g_history.first]);
+        g_history.lines[g_history.first] = str_dup(line);
+        g_history.first = (g_history.first + 1) % Z_HIST_MAX;
+    }
+}
+
+static const char* hist_path(char* buf, size_t bufsz) {
+    const char* home;
+#ifdef _WIN32
+    home = getenv("USERPROFILE");
+    if (!home) home = getenv("HOMEPATH");
+#else
+    home = getenv("HOME");
+#endif
+    if (!home || !*home) return NULL;
+    snprintf(buf, bufsz, "%s/.z_history", home);
+    return buf;
+}
+
+static void hist_load(void) {
+    char path[1024];
+    if (!hist_path(path, sizeof(path))) return;
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[Z_LINE_MAX];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = 0;
+        if (n) hist_add(line);
+    }
+    fclose(f);
+}
+
+static void hist_save(void) {
+    char path[1024];
+    if (!hist_path(path, sizeof(path))) return;
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < g_history.count; i++) {
+        const char* l = hist_get(i);
+        if (l) fprintf(f, "%s\n", l);
+    }
+    fclose(f);
+}
+
+/* --- platform raw-mode + key reading --- */
+
+#ifdef _WIN32
+static int z_isatty(void)  { return _isatty(_fileno(stdin)); }
+static int raw_enable(void) {
+    /* Enable ANSI escape sequence interpretation on Windows 10+. */
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+    if (GetConsoleMode(hOut, &mode))
+        SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    return 0;
+}
+static void raw_disable(void) { }
+static int read_key(void) { return _getch(); }
+#else
+static struct termios g_orig_termios;
+static int            g_raw_enabled = 0;
+
+static int z_isatty(void) { return isatty(STDIN_FILENO); }
+static int raw_enable(void) {
+    if (!isatty(STDIN_FILENO)) return -1;
+    if (tcgetattr(STDIN_FILENO, &g_orig_termios) != 0) return -1;
+    struct termios raw = g_orig_termios;
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= ~(OPOST);
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN]  = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return -1;
+    g_raw_enabled = 1;
+    return 0;
+}
+static void raw_disable(void) {
+    if (g_raw_enabled) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
+        g_raw_enabled = 0;
+    }
+}
+static int read_key(void) {
+    unsigned char c;
+    if (read(STDIN_FILENO, &c, 1) != 1) return -1;
+    return (int)c;
+}
+#endif
+
+/* Refresh the displayed line so it matches buf+pos. Uses ANSI escapes. */
+static void redraw_line(const char* prompt, const char* buf, size_t len, size_t pos) {
+    fputc('\r', stdout);
+    fputs(prompt, stdout);
+    fwrite(buf, 1, len, stdout);
+    fputs("\x1b[K", stdout);                 /* clear to end of line */
+    if (pos < len) printf("\x1b[%dD", (int)(len - pos));  /* cursor left */
+    fflush(stdout);
+}
+
+/* read_line return codes:
+ *   0 = got a line in `out`
+ *   1 = Ctrl-C pressed (current input discarded)
+ *  -1 = EOF (Ctrl-D on empty input, or stream closed)
+ */
+static int z_read_line(const char* prompt, char* out, size_t outsz) {
+    if (!z_isatty() || raw_enable() != 0) {
+        /* Non-interactive fallback: behave like fgets. */
+        fputs(prompt, stdout);
+        fflush(stdout);
+        if (!fgets(out, (int)outsz, stdin)) return -1;
+        size_t n = strlen(out);
+        while (n && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = 0;
+        return 0;
+    }
+
+    size_t len = 0, pos = 0;
+    int    hist_pos = g_history.count;
+    char   saved[Z_LINE_MAX]; saved[0] = 0;
+    out[0] = 0;
+
+    fputs(prompt, stdout);
+    fflush(stdout);
+
+    while (1) {
+        int c = read_key();
+        if (c < 0) { raw_disable(); return -1; }
+
+        /* Enter — emit CRLF because POSIX raw mode has OPOST off, so a bare
+           '\n' won't return the cursor to column 0. */
+        if (c == '\r' || c == '\n') {
+            out[len] = 0;
+            fputs("\r\n", stdout);
+            fflush(stdout);
+            raw_disable();
+            return 0;
+        }
+        /* Ctrl-C */
+        if (c == 3) {
+            fputs("^C\r\n", stdout);
+            fflush(stdout);
+            out[0] = 0;
+            raw_disable();
+            return 1;
+        }
+        /* Ctrl-D */
+        if (c == 4) {
+            if (len == 0) {
+                fputs("\r\n", stdout);
+                fflush(stdout);
+                raw_disable();
+                return -1;
+            }
+            if (pos < len) {
+                memmove(out + pos, out + pos + 1, len - pos);
+                len--;
+                redraw_line(prompt, out, len, pos);
+            }
+            continue;
+        }
+        /* Backspace (127 on POSIX, 8 on Windows) */
+        if (c == 127 || c == 8) {
+            if (pos > 0) {
+                memmove(out + pos - 1, out + pos, len - pos + 1);
+                pos--; len--;
+                redraw_line(prompt, out, len, pos);
+            }
+            continue;
+        }
+        /* Ctrl-A / Ctrl-E — line start / end */
+        if (c == 1)  { pos = 0;   redraw_line(prompt, out, len, pos); continue; }
+        if (c == 5)  { pos = len; redraw_line(prompt, out, len, pos); continue; }
+        /* Ctrl-K — kill to end of line */
+        if (c == 11) { len = pos; out[len] = 0; redraw_line(prompt, out, len, pos); continue; }
+        /* Ctrl-L — clear screen */
+        if (c == 12) { fputs("\x1b[H\x1b[2J", stdout); redraw_line(prompt, out, len, pos); continue; }
+
+#ifdef _WIN32
+        /* Windows arrow keys come as a 0 or 224 prefix then a scan code. */
+        if (c == 0 || c == 224) {
+            int s = read_key();
+            int arrow = 0;
+            if      (s == 72) arrow = 'A';   /* up    */
+            else if (s == 80) arrow = 'B';   /* down  */
+            else if (s == 77) arrow = 'C';   /* right */
+            else if (s == 75) arrow = 'D';   /* left  */
+            else if (s == 71) { pos = 0;   redraw_line(prompt, out, len, pos); continue; }
+            else if (s == 79) { pos = len; redraw_line(prompt, out, len, pos); continue; }
+            if (!arrow) continue;
+            c = 27;
+            /* fall through to ESC[arrow handling below by emulating sequence */
+            goto handle_arrow;
+        }
+#endif
+
+        /* ESC sequence (POSIX arrows) */
+        if (c == 27) {
+            int s1, s2;
+#ifndef _WIN32
+            s1 = read_key();
+            if (s1 != '[' && s1 != 'O') continue;
+            s2 = read_key();
+            if (s2 < 0) continue;
+#else
+            (void)s1; (void)s2;
+handle_arrow:
+            s2 = arrow;
+#endif
+            switch (s2) {
+                case 'A':  /* up */
+                    if (hist_pos > 0) {
+                        if (hist_pos == g_history.count) {
+                            /* save current buffer before walking back */
+                            memcpy(saved, out, len);
+                            saved[len] = 0;
+                        }
+                        hist_pos--;
+                        const char* l = hist_get(hist_pos);
+                        if (l) {
+                            strncpy(out, l, outsz - 1);
+                            out[outsz - 1] = 0;
+                            len = pos = strlen(out);
+                            redraw_line(prompt, out, len, pos);
+                        }
+                    }
+                    break;
+                case 'B':  /* down */
+                    if (hist_pos < g_history.count) {
+                        hist_pos++;
+                        if (hist_pos == g_history.count) {
+                            strncpy(out, saved, outsz - 1);
+                            out[outsz - 1] = 0;
+                        } else {
+                            const char* l = hist_get(hist_pos);
+                            if (l) {
+                                strncpy(out, l, outsz - 1);
+                                out[outsz - 1] = 0;
+                            }
+                        }
+                        len = pos = strlen(out);
+                        redraw_line(prompt, out, len, pos);
+                    }
+                    break;
+                case 'C':  /* right */
+                    if (pos < len) { pos++; redraw_line(prompt, out, len, pos); }
+                    break;
+                case 'D':  /* left */
+                    if (pos > 0)  { pos--; redraw_line(prompt, out, len, pos); }
+                    break;
+                case 'H':  pos = 0;   redraw_line(prompt, out, len, pos); break;
+                case 'F':  pos = len; redraw_line(prompt, out, len, pos); break;
+            }
+            continue;
+        }
+
+        /* Printable */
+        if (c >= 32 && c < 127) {
+            if (len + 1 < outsz) {
+                if (pos < len) memmove(out + pos + 1, out + pos, len - pos);
+                out[pos++] = (char)c;
+                len++;
+                out[len] = 0;
+                redraw_line(prompt, out, len, pos);
+            }
+        }
+        /* UTF-8 continuation / high bytes — insert as-is for simplicity */
+        else if ((unsigned char)c >= 128) {
+            if (len + 1 < outsz) {
+                if (pos < len) memmove(out + pos + 1, out + pos, len - pos);
+                out[pos++] = (char)c;
+                len++;
+                out[len] = 0;
+                redraw_line(prompt, out, len, pos);
+            }
+        }
+    }
+}
+
 static void repl(Env* env) {
-    char line[8192];
+    char line[Z_LINE_MAX];
     volatile int balance = 0;
     static char acc[65536]; acc[0] = '\0';
-    fputs("z (Mini Lisp Workflow Language) — REPL. Ctrl-D to exit.\n", stdout);
+
+    hist_load();
+
+    fputs("z (Mini Lisp Workflow Language) — REPL.\n", stdout);
+    fputs("  arrows: navigate history / move cursor   Ctrl-D: exit   Ctrl-C: cancel line\n", stdout);
+
     while (1) {
-        fputs(balance ? "... " : "z> ", stdout);
-        fflush(stdout);
-        if (!fgets(line, sizeof(line), stdin)) { fputc('\n', stdout); break; }
+        int rc = z_read_line(balance ? "... " : "z> ", line, sizeof(line));
+        if (rc == -1) { fputs("bye!\n", stdout); break; }
+        if (rc == 1)  { acc[0] = '\0'; balance = 0; continue; }
+
+        /* Track paren balance for multi-line input. */
         for (char* p = line; *p; p++) {
             if (*p == '(') balance++;
             else if (*p == ')') balance--;
         }
-        if (strlen(acc) + strlen(line) + 1 >= sizeof(acc)) { acc[0] = '\0'; balance = 0; fputs("input too long\n", stderr); continue; }
+        if (strlen(acc) + strlen(line) + 2 >= sizeof(acc)) {
+            acc[0] = '\0'; balance = 0;
+            fputs("input too long\n", stderr);
+            continue;
+        }
         strcat(acc, line);
+        strcat(acc, "\n");
         if (balance > 0) continue;
-        if (balance < 0) { fprintf(stderr, "unbalanced parens\n"); acc[0] = '\0'; balance = 0; continue; }
+        if (balance < 0) {
+            fprintf(stderr, "unbalanced parens\n");
+            acc[0] = '\0'; balance = 0;
+            continue;
+        }
+
+        /* Trim trailing newline before adding to history */
+        {
+            size_t n = strlen(acc);
+            char saved = 0;
+            if (n && acc[n-1] == '\n') { saved = acc[n-1]; acc[n-1] = 0; }
+            hist_add(acc);
+            if (saved) acc[n-1] = saved;
+        }
 
         ErrFrame f;
         f.prev   = g_err_top;
@@ -1957,12 +2375,15 @@ static void repl(Env* env) {
         }
         acc[0] = '\0';
     }
+
+    hist_save();
 }
 
 int main(int argc, char** argv) {
     srand((unsigned)time(NULL));
     g_prog_argc = argc;
     g_prog_argv = argv;
+    atexit(raw_disable);  /* always restore terminal cleanly */
     Env* env = env_new(NULL);
     install_builtins(env);
 

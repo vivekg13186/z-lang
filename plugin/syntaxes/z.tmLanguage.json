@@ -120,7 +120,7 @@
     },
     "builtins-string": {
       "name": "support.function.string.z",
-      "match": "(?<=\\(|\\s)(concat|split|trim|lower|upper|replace|substring)\\b"
+      "match": "(?<=\\(|\\s)(concat|split|trim|lower|upper|replace|substring|starts-with|ends-with|contains|index-of)\\b"
     },
     "builtins-math": {
       "name": "support.function.math.z",

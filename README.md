@@ -57,9 +57,25 @@ z                # start an interactive REPL
 z program.z      # run a source file
 ```
 
+### REPL line editing
+
+The REPL has a built-in line editor with command history:
+
+| Key            | Action                                  |
+| -------------- | --------------------------------------- |
+| `↑` / `↓`      | Navigate previous / next history entry  |
+| `←` / `→`      | Move cursor left / right                |
+| `Home` / `End` | Jump to start / end of line             |
+| `Ctrl-A` / `Ctrl-E` | Same as Home / End                 |
+| `Ctrl-K`       | Delete from cursor to end of line       |
+| `Ctrl-L`       | Clear the screen                        |
+| `Ctrl-C`       | Cancel the current line                 |
+| `Ctrl-D`       | Exit the REPL (on an empty line)        |
+
+History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history` on Windows), up to 1000 entries.
+
 ## What's implemented
 
-Everything from the "Core + stdlib" scope of `Concept.md`:
 
 - **Values:** number, string, boolean, null, array, object, function
 - **Syntax:** s-expressions, line comments with `;`, `[ ... ]` parsed the same as `( ... )`
@@ -70,7 +86,7 @@ Everything from the "Core + stdlib" scope of `Concept.md`:
 - **Logic:** `&&` `||` `!` (also as `and` / `or`)
 - **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `map`, `filter`, `reduce`
 - **Objects:** `object`, `get`, `put`, `keys`, `values`, `entries`
-- **Strings:** `concat`, `split`, `trim`, `lower`, `upper`, `replace`, `substring`
+- **Strings:** `concat`, `split`, `trim`, `lower`, `upper`, `replace`, `substring`, `starts-with`, `ends-with`, `contains`, `index-of`
 - **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
 - **I/O:** `print`, `read`, `write`, `append`, `delete`
 - **JSON:** `json:parse`, `json:stringify`
