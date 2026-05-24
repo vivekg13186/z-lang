@@ -1,0 +1,44 @@
+; format-date: turn a Unix timestamp into a string.
+;
+;   (format-date ts)             — default "YYYY-MM-DD HH:MM:SS"
+;   (format-date ts fmt)         — custom strftime-style format
+;
+; Get a timestamp from:
+;   (now)         — current time as a floating-point number (sub-second precision)
+;   (timestamp)   — current time as whole seconds
+;   any number you've stored, parsed, or computed
+
+; --- 1. Current time, default format ---
+(print "default       :" (format-date (timestamp)))
+
+; --- 2. A few common formats ---
+(set ts (timestamp))
+(print "ISO date      :" (format-date ts "%Y-%m-%d"))
+(print "ISO datetime  :" (format-date ts "%Y-%m-%dT%H:%M:%S"))
+(print "US date       :" (format-date ts "%m/%d/%Y"))
+(print "EU date       :" (format-date ts "%d/%m/%Y"))
+(print "long form     :" (format-date ts "%A, %B %d %Y"))
+(print "12-hour clock :" (format-date ts "%I:%M %p"))
+(print "day of year   :" (format-date ts "day %j of %Y"))
+(print "week number   :" (format-date ts "week %V"))
+
+; --- 3. Format a specific moment in history ---
+;     1577836800 = 2020-01-01 00:00:00 UTC
+(print "")
+(print "new year 2020 :" (format-date 1577836800 "%A %B %d %Y at %H:%M"))
+
+; --- 4. Use it for a log line ---
+(fn log (msg)
+    (print (concat "[" (format-date (timestamp) "%H:%M:%S") "] " msg))
+)
+(log "starting up")
+(log "all done")
+
+; --- 5. Quick reference for the most useful codes ---
+;
+;   %Y  4-digit year         %m  month 01-12       %d  day of month 01-31
+;   %H  hour 00-23           %M  minute 00-59      %S  second 00-59
+;   %I  hour 01-12           %p  AM/PM
+;   %A  full weekday name    %a  short weekday     %B  full month name
+;   %j  day of year 001-366  %V  ISO week number   %Z  time zone
+;   %s  Unix timestamp       %%  literal percent
