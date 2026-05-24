@@ -1,4 +1,4 @@
-# z — Mini Lisp Workflow Language
+# z — Mini Lisp   Language
 
 A tiny Lisp-flavoured language and tree-walking interpreter written in C99.
 Single source file, no external dependencies beyond the standard library, and
@@ -143,6 +143,6 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 - Single-file C99 implementation in `z.c`.
 - Tree-walking interpreter: the parser builds `Value` trees that the evaluator
   walks directly. No bytecode or VM yet.
-- Memory model is arena-style leak — fine for short workflow scripts. A GC is
+- Memory model is arena-style leak — fine for short   scripts. A GC is
   a natural next step.
 - Errors propagate through `setjmp`/`longjmp` so `try`/`catch` works cleanly.

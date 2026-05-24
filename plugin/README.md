@@ -1,7 +1,7 @@
 # Z Language — VS Code Extension
 
 Syntax highlighting, bracket matching, and snippets for **z**, the tiny
-Lisp-flavoured workflow language defined in this repo.
+Lisp-flavoured   language defined in this repo.
 
 ## What it gives you
 

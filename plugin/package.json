@@ -1,7 +1,7 @@
 {
   "name": "z-lang",
   "displayName": "Z Language",
-  "description": "Syntax highlighting, bracket matching, and snippets for the z Lisp-flavoured workflow language.",
+  "description": "Syntax highlighting, bracket matching, and snippets for the z Lisp-flavoured   language.",
   "version": "0.1.0",
   "publisher": "z-lang",
   "engines": {
@@ -14,7 +14,6 @@
   "keywords": [
     "z",
     "lisp",
-    "workflow",
     "dsl"
   ],
   "contributes": {

@@ -1,6 +1,6 @@
 ; JSON parse / stringify roundtrip.
 
-(set raw "{\"name\":\"vivek\",\"skills\":[\"c\",\"lisp\",\"workflow\"],\"age\":30}")
+(set raw "{\"name\":\"vivek\",\"skills\":[\"c\",\"lisp\",\" \"],\"age\":30}")
 (set obj (json:parse raw))
 
 (print "name:" (get obj "name"))

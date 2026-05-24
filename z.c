@@ -1,5 +1,5 @@
 /*
- * z — a tiny Lisp-flavoured workflow language.
+ * z — a tiny Lisp-flavoured   language.
  *
  * Single-file tree-walking interpreter written in C99.
  *
@@ -11,7 +11,7 @@
  *
  * Memory model: arena/leak. The interpreter allocates and never frees;
  * intended for short-running scripts. Plenty of headroom for typical
- * workflow programs and trivially safe.
+ *   programs and trivially safe.
  */
 
 #if !defined(_WIN32)
@@ -2321,7 +2321,7 @@ static void repl(Env* env) {
 
     hist_load();
 
-    fputs("z (Mini Lisp Workflow Language) — REPL.\n", stdout);
+    fputs("z (Mini Lisp Language) — REPL.\n", stdout);
     fputs("  arrows: navigate history / move cursor   Ctrl-D: exit   Ctrl-C: cancel line\n", stdout);
 
     while (1) {
