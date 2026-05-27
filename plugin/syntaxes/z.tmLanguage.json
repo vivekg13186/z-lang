@@ -120,7 +120,7 @@
     },
     "builtins-system": {
       "name": "support.function.system.z",
-      "match": "(?<=\\(|\\s)(print|type|assert|sleep|now|timestamp|format-date|env|exec|run|argv|exit|import)\\b"
+      "match": "(?<=\\(|\\s)(print|type|assert|sleep|now|timestamp|format-date|env|exec|run|argv|exit|import|help|encrypt|decrypt|uuid)\\b"
     },
     "builtins-collection": {
       "name": "support.function.collection.z",
@@ -140,7 +140,7 @@
     },
     "builtins-namespaced": {
       "name": "support.function.namespaced.z",
-      "match": "(?<=\\(|\\s)(json:parse|json:stringify|http:get|http:post|regex:test|regex:match|regex:find-all|regex:replace|regex:split|img:create|img:resize|img:crop|img:rotate|img:circle|img:rect|img:add-text|img:bw|img:grayscale|img:to-pdf|img:info)\\b"
+      "match": "(?<=\\(|\\s)(json:parse|json:stringify|base64:encode|base64:decode|http:get|http:post|regex:test|regex:match|regex:find-all|regex:replace|regex:split|img:create|img:resize|img:crop|img:rotate|img:circle|img:rect|img:add-text|img:bw|img:grayscale|img:to-pdf|img:qr|img:barcode|img:info)\\b"
     },
     "operators": {
       "name": "keyword.operator.z",

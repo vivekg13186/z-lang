@@ -29,7 +29,13 @@
  *   (img:bw         src dst [threshold])        — 1-bit black & white
  *   (img:grayscale  src dst)                    — 8-bit grayscale
  *   (img:to-pdf     images dst)                 — combine images into one PDF
+ *   (img:qr         text dst [scale])           — QR code  (needs qrencode/zint)
+ *   (img:barcode    data dst [type])            — 1D/2D barcode (needs zint)
  *   (img:info    path)                          — { width, height, format }
+ *
+ * img:qr and img:barcode use extra tools rather than ImageMagick:
+ *   qrencode — macOS: brew install qrencode · Linux: apt-get install qrencode
+ *   zint     — macOS: brew install zint     · Linux: apt-get install zint
  *
  * Colors are anything ImageMagick accepts: "red", "#ff8800", "rgb(0,128,255)",
  * "none" for transparent.
@@ -312,6 +318,97 @@ static Value* b_img_to_pdf(int argc, Value** argv, Env* e) {
     return v_str(dst);
 }
 
+/* Is a CLI tool available? Probes with the given `<tool> --version` command. */
+static int z_tool_available(const char* probe) {
+    int code = 0;
+    char* out = z_capture_command(probe, &code);
+    free(out);
+    return code == 0;
+}
+
+/* Trim trailing newlines and raise a formatted error from captured output. */
+static void z_img_fail(const char* fn, int code, char* out) {
+    char* msg = out ? out : str_dup("");
+    size_t L = strlen(msg);
+    while (L && (msg[L-1] == '\n' || msg[L-1] == '\r')) msg[--L] = 0;
+    z_raise("%s: failed (code %d): %s", fn, code, msg);
+}
+
+/* (img:qr text dst [scale])
+ * Generates a QR code PNG. Prefers `qrencode`, falls back to `zint`.
+ * scale = pixel size of each module (default 4). */
+static Value* b_img_qr(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2 || argc > 3)
+        z_raise("img:qr: expected (img:qr text dst [scale])");
+    const char* text = str_arg(argv[0], "img:qr");
+    const char* dst  = str_arg(argv[1], "img:qr");
+    long scale = argc >= 3 ? (long)num_arg(argv[2], "img:qr") : 4;
+    if (scale < 1) scale = 1;
+
+    char cmd[8192];
+    int code = 0;
+    char* out;
+
+    if (z_tool_available("qrencode --version")) {
+        snprintf(cmd, sizeof(cmd),
+                 "qrencode -o \"%s\" -s %ld \"%s\"", dst, scale, text);
+        out = z_capture_command(cmd, &code);
+    } else if (z_tool_available("zint --version")) {
+        snprintf(cmd, sizeof(cmd),
+                 "zint -o \"%s\" -b 58 --scale=%ld -d \"%s\"", dst, scale, text);
+        out = z_capture_command(cmd, &code);
+    } else {
+        z_raise("img:qr: needs `qrencode` or `zint` on PATH "
+                "(brew install qrencode / apt-get install qrencode)");
+        return v_null();
+    }
+    if (code != 0) z_img_fail("img:qr", code, out);
+    free(out);
+    return v_str(dst);
+}
+
+/* (img:barcode data dst [type])
+ * Generates a barcode PNG via `zint`. Default type "code128".
+ * Supported names: code128, code39, ean13, ean8, upca, upce, qr,
+ *                  datamatrix, pdf417. */
+static Value* b_img_barcode(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2 || argc > 3)
+        z_raise("img:barcode: expected (img:barcode data dst [type])");
+    const char* data = str_arg(argv[0], "img:barcode");
+    const char* dst  = str_arg(argv[1], "img:barcode");
+    const char* type = argc >= 3 ? str_arg(argv[2], "img:barcode") : "code128";
+
+    int sym;
+    if      (z_strcaseeq(type, "code128")) sym = 20;
+    else if (z_strcaseeq(type, "code39"))  sym = 8;
+    else if (z_strcaseeq(type, "ean13") || z_strcaseeq(type, "ean")) sym = 13;
+    else if (z_strcaseeq(type, "ean8"))    sym = 14;
+    else if (z_strcaseeq(type, "upca") || z_strcaseeq(type, "upc")) sym = 34;
+    else if (z_strcaseeq(type, "upce"))    sym = 37;
+    else if (z_strcaseeq(type, "qr"))      sym = 58;
+    else if (z_strcaseeq(type, "datamatrix") || z_strcaseeq(type, "dm")) sym = 71;
+    else if (z_strcaseeq(type, "pdf417"))  sym = 55;
+    else {
+        z_raise("img:barcode: unknown type '%s' "
+                "(code128, code39, ean13, ean8, upca, upce, qr, datamatrix, pdf417)", type);
+        return v_null();
+    }
+
+    if (!z_tool_available("zint --version"))
+        z_raise("img:barcode: needs `zint` on PATH "
+                "(brew install zint / apt-get install zint)");
+
+    char cmd[8192];
+    snprintf(cmd, sizeof(cmd), "zint -o \"%s\" -b %d -d \"%s\"", dst, sym, data);
+    int code = 0;
+    char* out = z_capture_command(cmd, &code);
+    if (code != 0) z_img_fail("img:barcode", code, out);
+    free(out);
+    return v_str(dst);
+}
+
 /* (img:info path) → { "width": N, "height": N, "format": "PNG" } */
 static Value* b_img_info(int argc, Value** argv, Env* e) {
     (void)e;
@@ -360,6 +457,8 @@ static void install_image_builtins(Env* env) {
     env_define(env, "img:bw",        v_native(b_img_bw));
     env_define(env, "img:grayscale", v_native(b_img_grayscale));
     env_define(env, "img:to-pdf",    v_native(b_img_to_pdf));
+    env_define(env, "img:qr",        v_native(b_img_qr));
+    env_define(env, "img:barcode",   v_native(b_img_barcode));
     env_define(env, "img:info",      v_native(b_img_info));
 }
 

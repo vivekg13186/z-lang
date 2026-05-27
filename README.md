@@ -181,6 +181,7 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
 - **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
 - **JSON:** `json:parse`, `json:stringify`
+- **Encoding / crypto:** `base64:encode`, `base64:decode`, `encrypt`, `decrypt` (lightweight XTEA-CTR), `uuid` (v4)
 - **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
 - **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
 - **Errors:** `try`/`catch` with `setjmp`/`longjmp`
@@ -268,7 +269,11 @@ stays lean. Pass the flag at build time to opt in.
 
 ### Image manipulation — `IMAGE=1`
 
-Builtins: `img:create`, `img:resize`, `img:crop`, `img:rotate`, `img:circle`, `img:rect`, `img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`, `img:info`.
+Builtins: `img:create`, `img:resize`, `img:crop`, `img:rotate`, `img:circle`, `img:rect`, `img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`, `img:qr`, `img:barcode`, `img:info`.
+
+`img:qr` and `img:barcode` use extra tools instead of ImageMagick:
+`qrencode` for QR (`brew install qrencode` / `apt-get install qrencode`) and
+`zint` for barcodes (`brew install zint` / `apt-get install zint`).
 
 ```
 make IMAGE=1
@@ -301,6 +306,8 @@ Quick taste:
 (img:bw        "photo.jpg" "scan.png" 50)              ; 1-bit, 50% threshold
 (img:grayscale "photo.jpg" "gray.png")                 ; 8-bit grayscale
 (img:to-pdf    (array "p1.png" "p2.png" "p3.png") "doc.pdf")
+(img:qr        "https://example.com" "qr.png" 6)       ; QR code
+(img:barcode   "012345678905" "code.png" "ean13")      ; barcode
 ```
 
 Colours are anything ImageMagick accepts — named (`"red"`), hex (`"#ff8800"`), RGB (`"rgb(0,128,255)"`), or `"none"` for transparency.

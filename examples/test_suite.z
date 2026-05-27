@@ -220,6 +220,24 @@
 (delete "/tmp/z_cp_src.txt")
 (delete "/tmp/z_mv_dst.txt")
 
+; --- base64 ---
+(check "b64-encode"     (== (base64:encode "hello") "aGVsbG8="))
+(check "b64-decode"     (== (base64:decode "aGVsbG8=") "hello"))
+(check "b64-roundtrip"  (== (base64:decode (base64:encode "z lang rocks!")) "z lang rocks!"))
+(check "b64-empty"      (== (base64:encode "") ""))
+
+; --- encrypt / decrypt ---
+(set secret (encrypt "my-key" "attack at dawn"))
+(check "encrypt-roundtrip" (== (decrypt "my-key" secret) "attack at dawn"))
+(check "encrypt-obscures"  (!= secret "attack at dawn"))
+(check "encrypt-wrong-key" (!= (decrypt "other-key" secret) "attack at dawn"))
+
+; --- uuid ---
+(set id (uuid))
+(check "uuid-length"  (== (length id) 36))
+(check "uuid-version" (== (substring id 14 15) "4"))
+(check "uuid-unique"  (!= (uuid) (uuid)))
+
 ; --- shell / run / argv ---
 (check "exec-basic" (== (trim (exec "echo hello")) "hello"))
 (set ok (run "echo z-rocks"))

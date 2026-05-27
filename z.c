@@ -33,6 +33,7 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <errno.h>
+#include <stdint.h>
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -1882,6 +1883,198 @@ static Value* b_rx_split(int argc, Value** argv, Env* e) {
     return out;
 }
 
+/* ============================================================
+ * Base64, lightweight encryption, and UUIDs
+ * ============================================================ */
+
+static const char B64_ALPHABET[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static char* base64_encode_bytes(const unsigned char* data, size_t len) {
+    size_t olen = 4 * ((len + 2) / 3);
+    char* out = (char*)malloc(olen + 1);
+    size_t i, j;
+    for (i = 0, j = 0; i < len; ) {
+        unsigned a = i < len ? data[i++] : 0;
+        unsigned b = i < len ? data[i++] : 0;
+        unsigned c = i < len ? data[i++] : 0;
+        unsigned triple = (a << 16) | (b << 8) | c;
+        out[j++] = B64_ALPHABET[(triple >> 18) & 0x3F];
+        out[j++] = B64_ALPHABET[(triple >> 12) & 0x3F];
+        out[j++] = B64_ALPHABET[(triple >> 6)  & 0x3F];
+        out[j++] = B64_ALPHABET[ triple        & 0x3F];
+    }
+    int mod = (int)(len % 3);
+    if (mod == 1) { out[olen-1] = '='; out[olen-2] = '='; }
+    else if (mod == 2) { out[olen-1] = '='; }
+    out[olen] = 0;
+    return out;
+}
+
+static int b64_value(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/* Decodes base64, ignoring whitespace and stopping at padding. Returns a
+ * malloc'd byte buffer; *out_len gets the decoded length. */
+static unsigned char* base64_decode_str(const char* in, size_t* out_len) {
+    size_t len = strlen(in);
+    unsigned char* out = (unsigned char*)malloc(len / 4 * 3 + 4);
+    size_t o = 0;
+    int quad[4], qn = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = in[i];
+        if (c == '=') break;
+        if (isspace((unsigned char)c)) continue;
+        int v = b64_value(c);
+        if (v < 0) continue;            /* skip stray characters */
+        quad[qn++] = v;
+        if (qn == 4) {
+            out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+            out[o++] = (unsigned char)(((quad[1] & 0xF) << 4) | (quad[2] >> 2));
+            out[o++] = (unsigned char)(((quad[2] & 0x3) << 6) | quad[3]);
+            qn = 0;
+        }
+    }
+    if (qn == 2) {
+        out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+    } else if (qn == 3) {
+        out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+        out[o++] = (unsigned char)(((quad[1] & 0xF) << 4) | (quad[2] >> 2));
+    }
+    out[o] = 0;
+    if (out_len) *out_len = o;
+    return out;
+}
+
+static Value* b_base64_encode(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("base64:encode", 1);
+    const char* s = str_arg(argv[0], "base64:encode");
+    return v_str_take(base64_encode_bytes((const unsigned char*)s, strlen(s)));
+}
+static Value* b_base64_decode(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("base64:decode", 1);
+    const char* s = str_arg(argv[0], "base64:decode");
+    size_t n = 0;
+    unsigned char* out = base64_decode_str(s, &n);
+    return v_str_take((char*)out);
+}
+
+/* --- XTEA block cipher (64-bit block, 128-bit key) --- */
+static void xtea_encrypt_block(const uint32_t key[4], uint32_t v[2]) {
+    uint32_t v0 = v[0], v1 = v[1], sum = 0;
+    const uint32_t delta = 0x9E3779B9u;
+    for (int i = 0; i < 32; i++) {
+        v0 += (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + key[sum & 3]);
+        sum += delta;
+        v1 += (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + key[(sum >> 11) & 3]);
+    }
+    v[0] = v0; v[1] = v1;
+}
+
+/* Derive a 128-bit key from an arbitrary string (FNV-1a based; not a strong
+ * KDF — this is lightweight obfuscation, not high-security crypto). */
+static void crypt_derive_key(const char* keystr, uint32_t key[4]) {
+    uint32_t seeds[4] = { 0x811c9dc5u, 0x01000193u, 0xdeadbeefu, 0xcafebabeu };
+    for (int k = 0; k < 4; k++) {
+        uint32_t h = seeds[k];
+        for (const char* p = keystr; *p; p++) {
+            h ^= (unsigned char)*p;
+            h *= 16777619u;
+            h ^= (uint32_t)(k + 1);
+        }
+        key[k] = h;
+    }
+}
+
+/* XTEA in CTR mode — symmetric, no padding, endianness-independent. */
+static void crypt_ctr(const uint32_t key[4], const unsigned char nonce[8],
+                      const unsigned char* in, size_t len, unsigned char* out) {
+    uint64_t base = 0;
+    for (int i = 0; i < 8; i++) base |= (uint64_t)nonce[i] << (8 * i);
+    size_t blocks = (len + 7) / 8;
+    for (size_t b = 0; b < blocks; b++) {
+        uint64_t counter = base + b;
+        unsigned char cb[8];
+        for (int i = 0; i < 8; i++) cb[i] = (unsigned char)(counter >> (8 * i));
+        uint32_t v[2];
+        v[0] = (uint32_t)cb[0] | ((uint32_t)cb[1]<<8) | ((uint32_t)cb[2]<<16) | ((uint32_t)cb[3]<<24);
+        v[1] = (uint32_t)cb[4] | ((uint32_t)cb[5]<<8) | ((uint32_t)cb[6]<<16) | ((uint32_t)cb[7]<<24);
+        xtea_encrypt_block(key, v);
+        unsigned char ks[8];
+        ks[0]=(unsigned char)v[0];      ks[1]=(unsigned char)(v[0]>>8);
+        ks[2]=(unsigned char)(v[0]>>16);ks[3]=(unsigned char)(v[0]>>24);
+        ks[4]=(unsigned char)v[1];      ks[5]=(unsigned char)(v[1]>>8);
+        ks[6]=(unsigned char)(v[1]>>16);ks[7]=(unsigned char)(v[1]>>24);
+        size_t off = b * 8;
+        for (size_t j = 0; j < 8 && off + j < len; j++)
+            out[off + j] = in[off + j] ^ ks[j];
+    }
+}
+
+/* (encrypt key text) → base64( nonce[8] || ciphertext ). Text only (no NUL). */
+static Value* b_encrypt(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("encrypt", 2);
+    const char* keystr = str_arg(argv[0], "encrypt");
+    const char* text   = str_arg(argv[1], "encrypt");
+    size_t len = strlen(text);
+
+    uint32_t key[4];
+    crypt_derive_key(keystr, key);
+
+    unsigned char nonce[8];
+    for (int i = 0; i < 8; i++) nonce[i] = (unsigned char)(rand() & 0xFF);
+
+    unsigned char* buf = (unsigned char*)malloc(8 + len);
+    memcpy(buf, nonce, 8);
+    crypt_ctr(key, nonce, (const unsigned char*)text, len, buf + 8);
+
+    char* b64 = base64_encode_bytes(buf, 8 + len);
+    free(buf);
+    return v_str_take(b64);
+}
+
+/* (decrypt key cipher) → original text. */
+static Value* b_decrypt(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("decrypt", 2);
+    const char* keystr = str_arg(argv[0], "decrypt");
+    const char* b64    = str_arg(argv[1], "decrypt");
+
+    size_t total = 0;
+    unsigned char* buf = base64_decode_str(b64, &total);
+    if (total < 8) { free(buf); z_raise("decrypt: ciphertext too short / malformed"); }
+
+    uint32_t key[4];
+    crypt_derive_key(keystr, key);
+
+    size_t len = total - 8;
+    unsigned char* out = (unsigned char*)malloc(len + 1);
+    crypt_ctr(key, buf, buf + 8, len, out);
+    out[len] = 0;
+    free(buf);
+    return v_str_take((char*)out);
+}
+
+/* (uuid) → random RFC-4122 version-4 UUID string. */
+static Value* b_uuid(int argc, Value** argv, Env* e) {
+    (void)e; (void)argc; (void)argv;
+    unsigned char b[16];
+    for (int i = 0; i < 16; i++) b[i] = (unsigned char)(rand() & 0xFF);
+    b[6] = (unsigned char)((b[6] & 0x0F) | 0x40);   /* version 4 */
+    b[8] = (unsigned char)((b[8] & 0x3F) | 0x80);   /* variant 10xx */
+    char out[37];
+    snprintf(out, sizeof(out),
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        b[0],b[1],b[2],b[3], b[4],b[5], b[6],b[7], b[8],b[9],
+        b[10],b[11],b[12],b[13],b[14],b[15]);
+    return v_str(out);
+}
+
 /* ---------- core ---------- */
 static Value* b_print(int argc, Value** argv, Env* e) {
     (void)e;
@@ -2603,6 +2796,13 @@ static const HelpTopic g_help_topics[] = {
       "  (json:parse s)            → value\n"
       "  (json:stringify v)        → string\n"
     },
+    { "crypto", "encoding & crypto",
+      "  (base64:encode s)         → base64 string\n"
+      "  (base64:decode s)         → original string\n"
+      "  (encrypt key text)        → base64 ciphertext (lightweight XTEA-CTR)\n"
+      "  (decrypt key cipher)      → original text\n"
+      "  (uuid)                    → random v4 UUID\n"
+    },
     { "http", "HTTP (via curl)",
       "  (http:get url [headers])      → response body\n"
       "  (http:post url body [headers])  body: object → JSON, string → raw\n"
@@ -2631,6 +2831,8 @@ static const HelpTopic g_help_topics[] = {
       "  (img:grayscale src dst)\n"
       "  (img:bw src dst [threshold])\n"
       "  (img:to-pdf images dst)\n"
+      "  (img:qr text dst [scale])           needs qrencode or zint\n"
+      "  (img:barcode data dst [type])       needs zint\n"
     },
 };
 
@@ -2649,7 +2851,7 @@ static Value* b_help(int argc, Value** argv, Env* env) {
         printf("%sz language cheat sheet%s\n", HBOLD, HRST);
         printf("%s(help \"topic\") for one section · "
                "topics: forms arith cmp logic arrays strings regex math core "
-               "file json http system%s%s\n\n",
+               "file json crypto http system%s%s\n\n",
                HDIM, has_image ? " image" : "", HRST);
         for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
             if (strcmp(g_help_topics[i].key, "image") == 0 && !has_image) continue;
@@ -2753,6 +2955,12 @@ static void install_builtins(Env* env) {
     /* json */
     env_define(env, "json:parse",     v_native(b_json_parse));
     env_define(env, "json:stringify", v_native(b_json_stringify));
+    /* base64 / crypto / ids */
+    env_define(env, "base64:encode", v_native(b_base64_encode));
+    env_define(env, "base64:decode", v_native(b_base64_decode));
+    env_define(env, "encrypt",       v_native(b_encrypt));
+    env_define(env, "decrypt",       v_native(b_decrypt));
+    env_define(env, "uuid",          v_native(b_uuid));
     /* http */
     env_define(env, "http:get",  v_native(b_http_get));
     env_define(env, "http:post", v_native(b_http_post));
