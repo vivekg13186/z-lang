@@ -16,22 +16,25 @@ if /I "%1"=="--image" (
     set EXTRA_MSVC=/DZ_WITH_IMAGE
 )
 
+set DIST=dist\windows_x86
+if not exist "%DIST%" mkdir "%DIST%"
+
 where cl >nul 2>&1
 if %errorlevel%==0 (
     echo Building with MSVC...
-    cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS %EXTRA_MSVC% z.c /Fe:z.exe
+    cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS %EXTRA_MSVC% z.c /Fe:%DIST%\z.exe /Fo%DIST%\z.obj
     if errorlevel 1 goto :err
-    if exist z.obj del z.obj
-    echo Built z.exe
+    if exist %DIST%\z.obj del %DIST%\z.obj
+    echo Built %DIST%\z.exe
     goto :ok
 )
 
 where gcc >nul 2>&1
 if %errorlevel%==0 (
     echo Building with MinGW gcc...
-    gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result %EXTRA_DEF% z.c -o z.exe
+    gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result %EXTRA_DEF% z.c -o %DIST%\z.exe
     if errorlevel 1 goto :err
-    echo Built z.exe
+    echo Built %DIST%\z.exe
     goto :ok
 )
 

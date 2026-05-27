@@ -190,6 +190,24 @@
 (check "index-of-arr"       (== (index-of (array "a" "b" "c") "b") 1))
 (check "index-of-arr-miss"  (== (index-of (array 1 2 3) 99) -1))
 
+; --- list-dir / file-info ---
+(set entries (list-dir "examples"))
+(check "list-dir-is-array" (== (type entries) "array"))
+(check "list-dir-has-self" (contains entries "test_suite.z"))
+
+(set info (file-info "examples/test_suite.z"))
+(check "file-info-exists"  (get info "exists"))
+(check "file-info-is-file" (get info "is-file"))
+(check "file-info-not-dir" (! (get info "is-dir")))
+(check "file-info-size>0"  (> (get info "size") 0))
+
+(set d (file-info "examples"))
+(check "dir-info-is-dir"   (get d "is-dir"))
+(check "dir-info-not-file" (! (get d "is-file")))
+
+(set missing (file-info "this/does/not/exist.xyz"))
+(check "file-info-missing" (! (get missing "exists")))
+
 ; --- shell / run / argv ---
 (check "exec-basic" (== (trim (exec "echo hello")) "hello"))
 (set ok (run "echo z-rocks"))

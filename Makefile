@@ -1,34 +1,57 @@
 # Cross-platform Makefile for the z interpreter.
 # Works with GNU make on macOS, Linux, and Windows (via MinGW / MSYS2).
+#
+# Output:
+#   dist/<os>_<arch>/z[.exe]
+#
+# e.g. on a Linux x86_64 box you'll get:
+#   dist/linux_x86/z
 
 CC      ?= cc
 SRC     := z.c
 PREFIX  ?= /usr/local
 
-# Detect host OS so we set the right flags, libs, and binary name.
+# --- Detect host OS and architecture -------------------------------------
 ifeq ($(OS),Windows_NT)
     PLATFORM := windows
-    BIN      := z.exe
+    EXT      := .exe
     LDLIBS   :=
+    # ARM Windows is uncommon; default to x86 unless overridden.
+    ARCH     := x86
 else
     UNAME_S := $(shell uname -s)
+    UNAME_M := $(shell uname -m)
     ifeq ($(UNAME_S),Darwin)
         PLATFORM := macos
-        BIN      := z
-        LDLIBS   := -lm
     else
         PLATFORM := linux
-        BIN      := z
-        LDLIBS   := -lm
+    endif
+    EXT      :=
+    LDLIBS   := -lm
+    # Normalise machine name into a short arch tag.
+    ifeq ($(UNAME_M),x86_64)
+        ARCH := x86
+    else ifeq ($(UNAME_M),amd64)
+        ARCH := x86
+    else ifeq ($(UNAME_M),aarch64)
+        ARCH := arm64
+    else ifeq ($(UNAME_M),arm64)
+        ARCH := arm64
+    else ifeq ($(UNAME_M),i686)
+        ARCH := x86_32
+    else
+        ARCH := $(UNAME_M)
     endif
 endif
+
+DIST_DIR := dist/$(PLATFORM)_$(ARCH)
+BIN      := $(DIST_DIR)/z$(EXT)
 
 CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result
 LDFLAGS ?=
 
-# Optional modules: enable with `make IMAGE=1`.
-# Image support shells out to ImageMagick at runtime, so the only extra
-# build cost is a single conditional include.
+# --- Optional modules ----------------------------------------------------
+# Enable with `make IMAGE=1`. Shells out to ImageMagick at runtime.
 IMAGE ?= 0
 ifeq ($(IMAGE),1)
     CFLAGS += -DZ_WITH_IMAGE
@@ -40,19 +63,25 @@ all: $(BIN)
 
 info:
 	@echo "platform: $(PLATFORM)"
+	@echo "arch:     $(ARCH)"
 	@echo "binary:   $(BIN)"
 	@echo "CC:       $(CC)"
 	@echo "CFLAGS:   $(CFLAGS)"
 	@echo "IMAGE:    $(IMAGE)"
 
 $(BIN): $(SRC)
+ifeq ($(PLATFORM),windows)
+	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
+else
+	@mkdir -p $(DIST_DIR)
+endif
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
 
 clean:
 ifeq ($(PLATFORM),windows)
-	-del /Q $(BIN) 2>nul
+	-if exist dist rmdir /S /Q dist
 else
-	rm -f $(BIN)
+	rm -rf dist
 endif
 
 install: $(BIN)
@@ -64,11 +93,11 @@ else
 endif
 
 test: $(BIN)
-	./$(BIN) examples/hello.z
-	./$(BIN) examples/adults.z
-	./$(BIN) examples/fib.z
-	./$(BIN) examples/json_demo.z
-	./$(BIN) examples/test_suite.z
+	$(BIN) examples/hello.z
+	$(BIN) examples/adults.z
+	$(BIN) examples/fib.z
+	$(BIN) examples/json_demo.z
+	$(BIN) examples/test_suite.z
 
 run: $(BIN)
-	./$(BIN)
+	$(BIN)

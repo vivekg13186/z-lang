@@ -12,8 +12,16 @@ Source files use the `.z` extension.
 
 ```
 make
-./z examples/adults.z
 make test
+```
+
+The compiled binary lands in `dist/<os>_<arch>/z`. So on Linux x86_64 it's
+`dist/linux_x86/z`, on macOS arm64 it's `dist/macos_arm64/z`, etc. Both
+`make test` and `make run` invoke it from there.
+
+```
+./dist/linux_x86/z examples/adults.z       # or whichever folder is yours
+make info                                   # prints platform, arch, and bin path
 ```
 
 You need a C compiler (`cc`/`gcc`/`clang`). On macOS run `xcode-select --install`
@@ -50,6 +58,29 @@ cmake --build build
 ./build/z examples/hello.z
 ```
 
+### Docker
+
+A multi-stage `Dockerfile` builds z, runs the test suite as a sanity
+check, and produces a slim runtime image with the binary plus the
+examples on board.
+
+```
+# Core build
+docker build -t z .
+
+# With the optional image module (also pulls in ImageMagick)
+docker build --build-arg IMAGE=1 -t z .
+
+# Run a script — mount your working directory at /work
+docker run --rm -v "$PWD:/work" z program.z
+
+# Or try a bundled example
+docker run --rm z /opt/z/examples/adults.z
+
+# Drop into the REPL
+docker run --rm -it z
+```
+
 ## Run
 
 ```
@@ -74,6 +105,13 @@ The REPL has a built-in line editor with command history:
 
 History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history` on Windows), up to 1000 entries.
 
+### Built-in help
+
+At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
+`(help "topic")` for one section. Topics: `forms` `arith` `cmp` `logic`
+`arrays` `strings` `regex` `math` `core` `file` `json` `http` `system`
+(plus `image` when built with `IMAGE=1`).
+
 ## What's implemented
 
 
@@ -90,10 +128,10 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 - **Template strings:** any `"..."` literal can embed `${expr}` — full z expressions evaluated in scope. Use `\$` for a literal `$`.
 - **Regex:** `regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split` — supports `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S`
 - **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
-- **I/O:** `print`, `read`, `write`, `append`, `delete`
+- **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`
 - **JSON:** `json:parse`, `json:stringify`
-- **HTTP:** `http:get`, `http:post` (delegates to `curl` — bundled with Windows 10 1803+, install via package manager elsewhere)
-- **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`
+- **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
+- **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
 - **Errors:** `try`/`catch` with `setjmp`/`longjmp`
 
 ## Quick taste
@@ -129,6 +167,48 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 ;   z myscript.z foo bar
 (argv)                     ; → ["foo", "bar"]
 ```
+
+## Template strings and regex
+
+```lisp
+(set name "vivek")  (set yr 2026)
+
+"hello ${name}"                    ; → "hello vivek"
+"next year: ${(+ yr 1)}"           ; → "next year: 2027"
+"len=${(length name)}"             ; → "len=5"
+"price: \$${yr}"                   ; → "price: $2026"      (escape with \$)
+
+(regex:test     "\d+" "answer is 42")              ; → true
+(regex:match    "\d+" "answer is 42")              ; → "42"
+(regex:find-all "\d+" "a1 b22 c333")               ; → ["1", "22", "333"]
+(regex:replace  "\d+" "have 3 cats, 4 dogs" "***") ; → "have *** cats, *** dogs"
+(regex:split    "[, ]+" "a, b,  c d")              ; → ["a", "b", "c", "d"]
+```
+
+Pattern syntax: `. * + ? ^ $ [class] [^class]` plus the shorthands `\d \w \s \D \W \S`.
+
+## HTTP
+
+```lisp
+; Simple GET / POST — unchanged.
+(http:get  "https://example.com")
+(http:post "https://api.example.com/log" (object "level" "info" "msg" "hi"))
+
+; Optional headers as an object on the last arg.
+(http:get "https://api.example.com/users/42"
+          (object "Authorization" "Bearer abc"
+                  "Accept"        "application/json"
+                  "X-Request-Id"  17))            ; numbers/booleans stringified
+
+; POST with custom headers — Content-Type defaults to application/json
+; for object bodies, text/plain for strings, but your override wins.
+(http:post "https://api.example.com/upload"
+           "row1,row2,row3"
+           (object "Content-Type" "text/csv"
+                   "X-Trace"      "abc"))
+```
+
+Bodies are written to a temp file and passed via `--data-binary @<file>`, so JSON with embedded quotes works on every shell. The temp file is deleted right after the call.
 
 ## Optional modules
 

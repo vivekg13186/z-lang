@@ -38,6 +38,7 @@
 #  include <windows.h>
 #  include <io.h>
 #  include <conio.h>
+#  include <sys/stat.h>
 #  ifndef popen
 #    define popen  _popen
 #    define pclose _pclose
@@ -49,7 +50,17 @@
 #  include <unistd.h>
 #  include <sys/time.h>
 #  include <sys/wait.h>
+#  include <sys/stat.h>
 #  include <termios.h>
+#  include <dirent.h>
+#endif
+
+/* MSVC's <sys/stat.h> doesn't define S_ISDIR / S_ISREG. */
+#ifndef S_ISDIR
+#  define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
+#ifndef S_ISREG
+#  define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
 
 /* ============================================================
@@ -1429,31 +1440,54 @@ static Value* b_reduce(int argc, Value** argv, Env* e) {
     return acc;
 }
 
+/* Render any z value as a plain-text string. Used by concat (and therefore by
+ * template-string interpolation). Compound types come out in JSON form so
+ * embedded arrays/objects render meaningfully instead of as "?". */
+static char* value_to_cstr(Value* v) {
+    StrBuf sb; sb_init(&sb);
+    if (!v) { sb_puts(&sb, "null"); return sb.data; }
+    char tmp[64];
+    switch (v->type) {
+        case V_NULL: sb_puts(&sb, "null"); break;
+        case V_BOOL: sb_puts(&sb, v->as.b ? "true" : "false"); break;
+        case V_NUM: {
+            double n = v->as.n;
+            if (n == (long long)n && n > -1e15 && n < 1e15)
+                snprintf(tmp, sizeof(tmp), "%lld", (long long)n);
+            else
+                snprintf(tmp, sizeof(tmp), "%g", n);
+            sb_puts(&sb, tmp);
+            break;
+        }
+        case V_STR: sb_puts(&sb, v->as.s); break;
+        case V_SYM: sb_puts(&sb, v->as.s); break;
+        case V_ARRAY:
+        case V_LIST:
+        case V_OBJECT:
+            json_encode(&sb, v);
+            break;
+        case V_FN:
+            sb_puts(&sb, v->as.fn.name ? v->as.fn.name : "<fn>");
+            break;
+        case V_NATIVE:
+            sb_puts(&sb, "<native>");
+            break;
+    }
+    if (!sb.data) { sb.data = (char*)calloc(1, 1); sb.len = 0; }
+    return sb.data;
+}
+
 /* ---------- string ---------- */
 static Value* b_concat(int argc, Value** argv, Env* e) {
     (void)e;
-    size_t total = 0;
-    char tmp[64];
-    /* Pre-pass: stringify everything we can */
-    char** parts = (char**)malloc(sizeof(char*) * argc);
+    StrBuf sb; sb_init(&sb);
     for (int i = 0; i < argc; i++) {
-        Value* v = argv[i];
-        if (v->type == V_STR) parts[i] = str_dup(v->as.s);
-        else if (v->type == V_NUM) {
-            double n = v->as.n;
-            if (n == (long long)n && n > -1e15 && n < 1e15) snprintf(tmp, sizeof(tmp), "%lld", (long long)n);
-            else snprintf(tmp, sizeof(tmp), "%g", n);
-            parts[i] = str_dup(tmp);
-        } else if (v->type == V_BOOL) parts[i] = str_dup(v->as.b ? "true" : "false");
-        else if (v->type == V_NULL)   parts[i] = str_dup("null");
-        else { parts[i] = str_dup("?"); }
-        total += strlen(parts[i]);
+        char* part = value_to_cstr(argv[i]);
+        sb_puts(&sb, part);
+        free(part);
     }
-    char* out = (char*)malloc(total + 1);
-    out[0] = '\0';
-    for (int i = 0; i < argc; i++) { strcat(out, parts[i]); free(parts[i]); }
-    free(parts);
-    return v_str_take(out);
+    if (!sb.data) { sb.data = (char*)calloc(1, 1); sb.len = 0; }
+    return v_str_take(sb.data);
 }
 static Value* b_split(int argc, Value** argv, Env* e) {
     (void)e;
@@ -1951,6 +1985,62 @@ static Value* b_delete(int argc, Value** argv, Env* e) {
     const char* path = str_arg(argv[0], "delete");
     if (remove(path) != 0) z_raise("delete: cannot remove '%s': %s", path, strerror(errno));
     return v_true();
+}
+
+/* (list-dir path) → array of entry names (without "." and "..").
+ * Cross-platform: uses opendir/readdir on POSIX, _findfirst/_findnext on Windows. */
+static Value* b_list_dir(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("list-dir", 1);
+    const char* path = str_arg(argv[0], "list-dir");
+    Value* out = v_array();
+
+#if defined(_WIN32)
+    char pattern[2048];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    struct _finddata_t fd;
+    intptr_t h = _findfirst(pattern, &fd);
+    if (h == -1)
+        z_raise("list-dir: cannot open '%s': %s", path, strerror(errno));
+    do {
+        if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0) continue;
+        vlist_push(&out->as.list, v_str(fd.name));
+    } while (_findnext(h, &fd) == 0);
+    _findclose(h);
+#else
+    DIR* d = opendir(path);
+    if (!d) z_raise("list-dir: cannot open '%s': %s", path, strerror(errno));
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        vlist_push(&out->as.list, v_str(ent->d_name));
+    }
+    closedir(d);
+#endif
+    return out;
+}
+
+/* (file-info path) → { path, exists, is-dir, is-file, size, modified }.
+ * `exists` is false (and the other fields absent) if the path doesn't resolve. */
+static Value* b_file_info(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("file-info", 1);
+    const char* path = str_arg(argv[0], "file-info");
+
+    Value* o = v_object();
+    obj_set(&o->as.obj, "path", v_str(path));
+
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        obj_set(&o->as.obj, "exists", v_false());
+        return o;
+    }
+    obj_set(&o->as.obj, "exists",   v_true());
+    obj_set(&o->as.obj, "is-dir",   v_bool(S_ISDIR(st.st_mode) ? 1 : 0));
+    obj_set(&o->as.obj, "is-file",  v_bool(S_ISREG(st.st_mode) ? 1 : 0));
+    obj_set(&o->as.obj, "size",     v_num((double)st.st_size));
+    obj_set(&o->as.obj, "modified", v_num((double)st.st_mtime));
+    return o;
 }
 
 /* ---------- JSON ---------- */
@@ -2457,6 +2547,8 @@ static const HelpTopic g_help_topics[] = {
       "  (write path s)\n"
       "  (append path s)\n"
       "  (delete path)\n"
+      "  (list-dir path)           → array of entry names\n"
+      "  (file-info path)          → { exists, is-dir, is-file, size, modified }\n"
     },
     { "json", "JSON",
       "  (json:parse s)            → value\n"
@@ -2601,10 +2693,12 @@ static void install_builtins(Env* env) {
     env_define(env, "random", v_native(b_random));
     env_define(env, "abs",    v_native(b_abs));
     /* file */
-    env_define(env, "read",   v_native(b_read));
-    env_define(env, "write",  v_native(b_write));
-    env_define(env, "append", v_native(b_append));
-    env_define(env, "delete", v_native(b_delete));
+    env_define(env, "read",      v_native(b_read));
+    env_define(env, "write",     v_native(b_write));
+    env_define(env, "append",    v_native(b_append));
+    env_define(env, "delete",    v_native(b_delete));
+    env_define(env, "list-dir",  v_native(b_list_dir));
+    env_define(env, "file-info", v_native(b_file_info));
     /* json */
     env_define(env, "json:parse",     v_native(b_json_parse));
     env_define(env, "json:stringify", v_native(b_json_stringify));
@@ -2971,7 +3065,7 @@ static void repl(Env* env) {
 
     hist_load();
 
-    fputs("z (Mini Lisp Language) — REPL.\n", stdout);
+    fputs("z — REPL.\n", stdout);
     fputs("  type `help` for a cheat sheet · arrows: history / cursor · Ctrl-D: exit · Ctrl-C: cancel\n", stdout);
 
     while (1) {

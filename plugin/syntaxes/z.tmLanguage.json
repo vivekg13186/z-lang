@@ -136,7 +136,7 @@
     },
     "builtins-io": {
       "name": "support.function.io.z",
-      "match": "(?<=\\(|\\s)(read|write|append|delete)\\b"
+      "match": "(?<=\\(|\\s)(read|write|append|delete|list-dir|file-info)\\b"
     },
     "builtins-namespaced": {
       "name": "support.function.namespaced.z",
