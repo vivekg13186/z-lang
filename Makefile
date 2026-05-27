@@ -46,8 +46,9 @@ endif
 
 DIST_DIR := dist/$(PLATFORM)_$(ARCH)
 BIN      := $(DIST_DIR)/z$(EXT)
+IDE_BIN  := $(DIST_DIR)/zide$(EXT)
 
-CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result
+CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-unused-function
 LDFLAGS ?=
 
 # --- Optional modules ----------------------------------------------------
@@ -57,9 +58,12 @@ ifeq ($(IMAGE),1)
     CFLAGS += -DZ_WITH_IMAGE
 endif
 
-.PHONY: all clean install test run info
+.PHONY: all clean install test run info zide
 
-all: $(BIN)
+all: $(BIN) $(IDE_BIN)
+
+# Build just the enhanced REPL.
+zide: $(IDE_BIN)
 
 info:
 	@echo "platform: $(PLATFORM)"
@@ -69,19 +73,36 @@ info:
 	@echo "CFLAGS:   $(CFLAGS)"
 	@echo "IMAGE:    $(IMAGE)"
 
-$(BIN): $(SRC)
+$(BIN): $(SRC) z_img.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
+	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
+	@copy /Y "$(subst /,\,$(BIN))" z$(EXT) >nul
 else
 	@mkdir -p $(DIST_DIR)
-endif
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
+	@ln -sf $(BIN) z
+endif
+
+$(IDE_BIN): zide.c $(SRC) z_img.h
+ifeq ($(PLATFORM),windows)
+	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
+	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)
+	@copy /Y "$(subst /,\,$(IDE_BIN))" zide$(EXT) >nul
+else
+	@mkdir -p $(DIST_DIR)
+	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)
+	@ln -sf $(IDE_BIN) zide
+endif
 
 clean:
 ifeq ($(PLATFORM),windows)
 	-if exist dist rmdir /S /Q dist
+	-if exist z.exe del z.exe
+	-if exist zide.exe del zide.exe
 else
 	rm -rf dist
+	rm -f z zide
 endif
 
 install: $(BIN)

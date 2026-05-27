@@ -24,17 +24,26 @@ if %errorlevel%==0 (
     echo Building with MSVC...
     cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS %EXTRA_MSVC% z.c /Fe:%DIST%\z.exe /Fo%DIST%\z.obj
     if errorlevel 1 goto :err
+    cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS %EXTRA_MSVC% zide.c /Fe:%DIST%\zide.exe /Fo%DIST%\zide.obj
+    if errorlevel 1 goto :err
     if exist %DIST%\z.obj del %DIST%\z.obj
-    echo Built %DIST%\z.exe
+    if exist %DIST%\zide.obj del %DIST%\zide.obj
+    copy /Y %DIST%\z.exe z.exe >nul
+    copy /Y %DIST%\zide.exe zide.exe >nul
+    echo Built %DIST%\z.exe and %DIST%\zide.exe
     goto :ok
 )
 
 where gcc >nul 2>&1
 if %errorlevel%==0 (
     echo Building with MinGW gcc...
-    gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result %EXTRA_DEF% z.c -o %DIST%\z.exe
+    gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-unused-function %EXTRA_DEF% z.c -o %DIST%\z.exe
     if errorlevel 1 goto :err
-    echo Built %DIST%\z.exe
+    gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-unused-function %EXTRA_DEF% zide.c -o %DIST%\zide.exe
+    if errorlevel 1 goto :err
+    copy /Y %DIST%\z.exe z.exe >nul
+    copy /Y %DIST%\zide.exe zide.exe >nul
+    echo Built %DIST%\z.exe and %DIST%\zide.exe
     goto :ok
 )
 

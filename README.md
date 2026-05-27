@@ -1,8 +1,14 @@
 # z — Mini Lisp   Language
 
 A tiny Lisp-flavoured language and tree-walking interpreter written in C99.
-Single source file, no external dependencies beyond the standard library, and
-the same code builds on **macOS**, **Linux**, and **Windows**.
+No external dependencies beyond the standard library, and the same code
+builds on **macOS**, **Linux**, and **Windows**.
+
+Ships as two binaries:
+
+- **`z`** — the interpreter; runs `.z` files and a basic REPL.
+- **`zide`** — an enhanced REPL with live syntax highlighting, Tab
+  autocompletion, and history (see [zide — enhanced REPL](#zide--enhanced-repl)).
 
 Source files use the `.z` extension.
 
@@ -11,17 +17,21 @@ Source files use the `.z` extension.
 ### macOS / Linux
 
 ```
-make
+make            # builds both z and zide
 make test
 ```
 
-The compiled binary lands in `dist/<os>_<arch>/z`. So on Linux x86_64 it's
-`dist/linux_x86/z`, on macOS arm64 it's `dist/macos_arm64/z`, etc. Both
-`make test` and `make run` invoke it from there.
+`make` compiles both binaries into `dist/<os>_<arch>/` — e.g. `dist/linux_x86/z`
+and `dist/linux_x86/zide` on Linux x86_64, `dist/macos_arm64/...` on Apple
+Silicon, and so on. For convenience it also creates `./z` and `./zide`
+symlinks at the project root pointing at the right platform folder, so you can
+just run them from there:
 
 ```
-./dist/linux_x86/z examples/adults.z       # or whichever folder is yours
-make info                                   # prints platform, arch, and bin path
+./z examples/adults.z      # the interpreter
+./zide                     # the enhanced REPL
+make zide                  # build only zide
+make info                  # prints platform, arch, and bin paths
 ```
 
 You need a C compiler (`cc`/`gcc`/`clang`). On macOS run `xcode-select --install`
@@ -37,10 +47,13 @@ Two options.
 ```
 build.bat
 z.exe examples\adults.z
+zide.exe
 ```
 
-Open a Developer Command Prompt if you want it to use MSVC's `cl`. Open a normal
-shell with `gcc` on PATH if you'd rather use MinGW-w64.
+Builds both `z.exe` and `zide.exe` into `dist\windows_x86\` and copies them to
+the project root. Open a Developer Command Prompt if you want it to use MSVC's
+`cl`. Open a normal shell with `gcc` on PATH if you'd rather use MinGW-w64.
+Pass `build.bat --image` to enable the optional image module.
 
 **Option B — CMake** (works with any generator: Visual Studio, Ninja, MinGW):
 
@@ -88,6 +101,44 @@ z                # start an interactive REPL
 z program.z      # run a source file
 ```
 
+`make` builds two binaries: `z` (the interpreter + basic REPL) and `zide`
+(an enhanced REPL — see below). Both land in `dist/<os>_<arch>/`.
+
+## zide — enhanced REPL
+
+`zide` is a richer interactive front end built on the same interpreter:
+
+- **Live syntax highlighting** as you type — comments, strings, numbers,
+  special forms, builtins, `${...}` interpolation, and brackets are colourised.
+- **Tab autocompletion** of special forms, builtins, and your own defined
+  variables (completes the common prefix, lists options when ambiguous).
+- **Arrow-key history** (shared `~/.z_history`), in-line editing
+  (`←`/`→`, `Home`/`End`, `Ctrl-A/E/K/L`), and bracket-aware multi-line input.
+- `help` / `?` for the cheat sheet, `:q` (or `:quit`) to exit.
+
+```
+make            # builds both z and zide
+./zide          # launch it (root symlink → dist/<os>_<arch>/zide)
+```
+
+Results are shown with a `=>` prefix. Like `z`, `zide program.z` will just
+run a file. When output isn't a terminal (piped/redirected) it degrades
+gracefully to plain, uncoloured behaviour.
+
+A quick session:
+
+```
+$ ./zide
+zide — enhanced REPL for z
+syntax colouring · Tab completes · arrows for history · `help` for the cheat sheet · :q to quit
+zide> (set xs (array 1 2 3 4))
+=> [1, 2, 3, 4]
+zide> (map (lambda (n) (* n n)) xs)
+=> [1, 4, 9, 16]
+zide> :q
+bye!
+```
+
 ### REPL line editing
 
 The REPL has a built-in line editor with command history:
@@ -128,7 +179,7 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **Template strings:** any `"..."` literal can embed `${expr}` — full z expressions evaluated in scope. Use `\$` for a literal `$`.
 - **Regex:** `regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split` — supports `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S`
 - **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
-- **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`
+- **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
 - **JSON:** `json:parse`, `json:stringify`
 - **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
 - **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`

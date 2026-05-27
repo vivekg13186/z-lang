@@ -208,6 +208,18 @@
 (set missing (file-info "this/does/not/exist.xyz"))
 (check "file-info-missing" (! (get missing "exists")))
 
+; --- copy-file / move-file ---
+(write "/tmp/z_cp_src.txt" "hello copy")
+(copy-file "/tmp/z_cp_src.txt" "/tmp/z_cp_dst.txt")
+(check "copy-file-content" (== (read "/tmp/z_cp_dst.txt") "hello copy"))
+(check "copy-file-src-kept" (get (file-info "/tmp/z_cp_src.txt") "exists"))
+
+(move-file "/tmp/z_cp_dst.txt" "/tmp/z_mv_dst.txt")
+(check "move-file-content"  (== (read "/tmp/z_mv_dst.txt") "hello copy"))
+(check "move-file-src-gone" (! (get (file-info "/tmp/z_cp_dst.txt") "exists")))
+(delete "/tmp/z_cp_src.txt")
+(delete "/tmp/z_mv_dst.txt")
+
 ; --- shell / run / argv ---
 (check "exec-basic" (== (trim (exec "echo hello")) "hello"))
 (set ok (run "echo z-rocks"))

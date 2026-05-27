@@ -6,6 +6,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(z z.c)
+add_executable(zide zide.c)
 
 # Match the Makefile's dist/<os>_<arch>/ layout.
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
@@ -26,25 +27,28 @@ else()
     set(Z_ARCH "${CMAKE_HOST_SYSTEM_PROCESSOR}")
 endif()
 
-set_target_properties(z PROPERTIES
+set_target_properties(z zide PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist/${Z_PLATFORM}_${Z_ARCH}")
 
 # Optional image module — set -DZ_WITH_IMAGE=ON when configuring.
 option(Z_WITH_IMAGE "Build with image manipulation builtins (requires ImageMagick at runtime)" OFF)
 if(Z_WITH_IMAGE)
-    target_compile_definitions(z PRIVATE Z_WITH_IMAGE)
+    target_compile_definitions(z    PRIVATE Z_WITH_IMAGE)
+    target_compile_definitions(zide PRIVATE Z_WITH_IMAGE)
 endif()
 
-if(MSVC)
-    target_compile_definitions(z PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(z PRIVATE /W3)
-else()
-    target_compile_options(z PRIVATE
-        -O2 -Wall -Wextra
-        -Wno-unused-parameter -Wno-unused-result)
-    target_link_libraries(z PRIVATE m)
-endif()
+foreach(tgt z zide)
+    if(MSVC)
+        target_compile_definitions(${tgt} PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(${tgt} PRIVATE /W3)
+    else()
+        target_compile_options(${tgt} PRIVATE
+            -O2 -Wall -Wextra
+            -Wno-unused-parameter -Wno-unused-result)
+        target_link_libraries(${tgt} PRIVATE m)
+    endif()
+endforeach()
 
-# Allow `cmake --install .` to drop the binary on POSIX systems.
+# Allow `cmake --install .` to drop both binaries on POSIX systems.
 include(GNUInstallDirs)
-install(TARGETS z RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS z zide RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

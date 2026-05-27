@@ -2043,6 +2043,53 @@ static Value* b_file_info(int argc, Value** argv, Env* e) {
     return o;
 }
 
+/* Binary-safe file copy. Returns 0 on success, or sets *err to a message. */
+static int z_copy_bytes(const char* src, const char* dst, const char** err) {
+    FILE* in = fopen(src, "rb");
+    if (!in) { *err = strerror(errno); return -1; }
+    FILE* out = fopen(dst, "wb");
+    if (!out) { *err = strerror(errno); fclose(in); return -1; }
+    char buf[65536];
+    size_t n;
+    int rc = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { *err = "write failed"; rc = -1; break; }
+    }
+    if (rc == 0 && ferror(in)) { *err = "read failed"; rc = -1; }
+    fclose(in);
+    if (fclose(out) != 0 && rc == 0) { *err = strerror(errno); rc = -1; }
+    return rc;
+}
+
+/* (copy-file src dst) — copies file contents, overwriting dst. */
+static Value* b_copy_file(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("copy-file", 2);
+    const char* src = str_arg(argv[0], "copy-file");
+    const char* dst = str_arg(argv[1], "copy-file");
+    const char* err = NULL;
+    if (z_copy_bytes(src, dst, &err) != 0)
+        z_raise("copy-file: '%s' -> '%s': %s", src, dst, err ? err : "unknown error");
+    return v_str(dst);
+}
+
+/* (move-file src dst) — rename, falling back to copy+delete across devices. */
+static Value* b_move_file(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("move-file", 2);
+    const char* src = str_arg(argv[0], "move-file");
+    const char* dst = str_arg(argv[1], "move-file");
+    /* Remove an existing destination first so rename succeeds on Windows. */
+    remove(dst);
+    if (rename(src, dst) == 0) return v_str(dst);
+    /* rename can fail across filesystems (EXDEV) — fall back to copy + unlink. */
+    const char* err = NULL;
+    if (z_copy_bytes(src, dst, &err) != 0)
+        z_raise("move-file: '%s' -> '%s': %s", src, dst, err ? err : "unknown error");
+    if (remove(src) != 0)
+        z_raise("move-file: copied to '%s' but could not remove '%s': %s",
+                dst, src, strerror(errno));
+    return v_str(dst);
+}
+
 /* ---------- JSON ---------- */
 typedef struct {
     const char* s;
@@ -2549,6 +2596,8 @@ static const HelpTopic g_help_topics[] = {
       "  (delete path)\n"
       "  (list-dir path)           → array of entry names\n"
       "  (file-info path)          → { exists, is-dir, is-file, size, modified }\n"
+      "  (copy-file src dst)\n"
+      "  (move-file src dst)       rename, with cross-device fallback\n"
     },
     { "json", "JSON",
       "  (json:parse s)            → value\n"
@@ -2699,6 +2748,8 @@ static void install_builtins(Env* env) {
     env_define(env, "delete",    v_native(b_delete));
     env_define(env, "list-dir",  v_native(b_list_dir));
     env_define(env, "file-info", v_native(b_file_info));
+    env_define(env, "copy-file", v_native(b_copy_file));
+    env_define(env, "move-file", v_native(b_move_file));
     /* json */
     env_define(env, "json:parse",     v_native(b_json_parse));
     env_define(env, "json:stringify", v_native(b_json_stringify));
@@ -3137,6 +3188,9 @@ static void repl(Env* env) {
     hist_save();
 }
 
+/* Define Z_NO_MAIN before #including z.c to embed the interpreter in another
+ * front end (see zide.c). */
+#ifndef Z_NO_MAIN
 int main(int argc, char** argv) {
     srand((unsigned)time(NULL));
     g_prog_argc = argc;
@@ -3168,3 +3222,4 @@ int main(int argc, char** argv) {
     free(src);
     return 0;
 }
+#endif /* Z_NO_MAIN */
