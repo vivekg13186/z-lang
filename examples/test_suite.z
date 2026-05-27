@@ -146,6 +146,33 @@
 (check "type-arr"  (== (type (array)) "array"))
 (check "type-obj"  (== (type (object)) "object"))
 
+; --- template strings ---
+(set who "vivek")
+(set yr  2026)
+(check "tpl-basic"     (== "hi ${who}"            "hi vivek"))
+(check "tpl-multi"     (== "${who} in ${yr}"      "vivek in 2026"))
+(check "tpl-expr"      (== "next: ${(+ yr 1)}"    "next: 2027"))
+(check "tpl-no-interp" (== "plain text"           "plain text"))
+(check "tpl-escape-$"  (== "price: \$${yr}"       "price: $2026"))
+(check "tpl-nested-fn" (== "len=${(length who)}"  "len=5"))
+
+; --- regex ---
+(check "rx-test-yes"   (regex:test "\d+"        "abc 123 def"))
+(check "rx-test-no"    (! (regex:test "\d+"     "abcdef")))
+(check "rx-match-num"  (== (regex:match "\d+"   "abc 123 def") "123"))
+(check "rx-match-miss" (== (regex:match "\d+"   "abcdef") null))
+(check "rx-find-all"   (== (length (regex:find-all "\d+" "a1 b22 c333")) 3))
+(check "rx-replace"    (== (regex:replace "\d+" "x1y22z333" "N") "xNyNzN"))
+(check "rx-split"      (== (length (regex:split "[, ]+" "a, b,  c d")) 4))
+(check "rx-anchor-^"   (regex:test "^hello" "hello world"))
+(check "rx-anchor-$"   (regex:test "world$" "hello world"))
+(check "rx-class"      (regex:test "^[A-Z][a-z]+$" "Hello"))
+(check "rx-class-neg"  (! (regex:test "[^a-z]"      "abcdef")))
+(check "rx-quant-?"    (== (regex:match "colou?r" "color")  "color"))
+(check "rx-quant-+"    (== (regex:match "a+"      "baaab")  "aaa"))
+(check "rx-quant-*"    (== (regex:match "ab*"     "a")      "a"))
+(check "rx-dot"        (== (regex:match "h.t"     "hot")    "hot"))
+
 ; --- string membership ---
 (check "starts-with-true"   (starts-with "hello world" "hello"))
 (check "starts-with-false"  (! (starts-with "hello world" "world")))

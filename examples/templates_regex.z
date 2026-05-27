@@ -1,0 +1,51 @@
+; Template strings and regular expressions.
+
+; ============================================================
+; Template strings — write "${expr}" inside any string literal.
+; The expression can be any z code, evaluated in the current scope.
+; Use \$ to write a literal dollar sign.
+; ============================================================
+
+(set name "vivek")
+(set lang "z")
+
+(print "hello ${name}, welcome to ${lang}")
+(print "uppercase: ${(upper name)}")
+(print "price tag: \$${(* 9 50)}")        ; → price tag: $450
+(print "${(if (> 10 5) \"yes\" \"no\")}")  ; arbitrary expressions
+
+; --- build a greeting from an object ---
+(set user (object "name" "Alice" "role" "admin"))
+(print "user ${(get user \"name\")} is a ${(get user \"role\")}")
+
+; --- formatted log lines ---
+(fn log (level msg)
+    (print "[${(format-date (timestamp) \"%H:%M:%S\")}] ${level}: ${msg}")
+)
+(log "INFO"  "system started")
+(log "ERROR" "disk full")
+
+; ============================================================
+; Regular expressions — basic backtracking matcher.
+;   . * + ? ^ $   [class]  [^class]  \d \w \s \D \W \S
+; ============================================================
+
+(print "")
+(print "--- regex ---")
+(print "is digit?: " (regex:test "\d+" "abc 42"))
+(print "first num: " (regex:match "\d+" "answer is 42"))
+(print "all nums : " (regex:find-all "\d+" "1 fish 2 fish red 99 blue"))
+(print "obfuscate: " (regex:replace "\d+" "have 3 cats and 4 dogs" "***"))
+(print "tokens   : " (regex:split "[, ]+" "alpha, beta,  gamma delta"))
+
+; --- email-ish validation ---
+(fn looks-like-email (s)
+    (regex:test "^[\w.-]+@[\w.-]+\.[a-zA-Z]+$" s)
+)
+(print "vivek@example.com → " (looks-like-email "vivek@example.com"))
+(print "not-an-email      → " (looks-like-email "not-an-email"))
+
+; --- combine: template + regex for nice messages ---
+(set text "order #1234 totalled $567.89")
+(set num (regex:match "\d+" text))
+(print "found order ${num} in: \"${text}\"")

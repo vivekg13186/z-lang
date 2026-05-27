@@ -1,0 +1,49 @@
+; Image manipulation — requires z built with `make IMAGE=1` and
+; ImageMagick installed on the system.
+;
+;   macOS:    brew install imagemagick
+;   Linux:    sudo apt-get install imagemagick   (or dnf install ImageMagick)
+;   Windows:  scoop install imagemagick
+
+; --- 1. Create a blank canvas ---
+(img:create "canvas.png" 400 300 "white")
+(print "canvas:" (img:info "canvas.png"))
+
+; --- 2. Draw on it: filled circles and rectangles, src == dst for in-place ---
+(img:circle "canvas.png" "canvas.png" 100 150  60 "tomato")
+(img:circle "canvas.png" "canvas.png" 200 150  60 "gold"   "black" 3)  ; with outline
+(img:circle "canvas.png" "canvas.png" 300 150  60 "none"   "steelblue" 5)  ; outline only
+(img:rect   "canvas.png" "canvas.png"  20 220 360 60 "#eef")
+(img:add-text "canvas.png" "canvas.png" "drawn with z" 80 240 28 "black")
+(print "wrote canvas.png")
+
+; --- 3. Inspect any existing image ---
+(set info (img:info "canvas.png"))
+(print "format:" (get info "format")
+       "size:"   (get info "width") "x" (get info "height"))
+
+; --- 4. Transform an existing image ---
+(img:resize "canvas.png" "thumb.png"   200 150)
+(img:crop   "canvas.png" "tile.png"    100 100 150 100)
+(img:rotate "canvas.png" "tilted.png"  15)
+
+; --- 5. Colour conversions ---
+(img:grayscale "canvas.png" "gray.png")            ; 8-bit grayscale
+(img:bw        "canvas.png" "bw.png")              ; 1-bit black & white
+(img:bw        "canvas.png" "bw_dark.png" 30)      ; lower threshold → more black
+
+; --- 6. Combine images into a single PDF ---
+(img:to-pdf (array "canvas.png" "thumb.png" "tilted.png") "report.pdf")
+(print "wrote report.pdf (3 pages)")
+
+; --- 5. A small workflow: build thumbnails for a folder of PNGs ---
+(fn build-thumbs (paths)
+    (for p paths
+        (do
+            (set out (concat "thumb_" p))
+            (img:resize p out 128 128)
+            (print "  ✓" out)
+        )
+    )
+)
+; (build-thumbs (array "a.png" "b.png" "c.png"))

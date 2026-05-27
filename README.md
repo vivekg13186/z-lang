@@ -87,6 +87,8 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 - **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `map`, `filter`, `reduce`
 - **Objects:** `object`, `get`, `put`, `keys`, `values`, `entries`
 - **Strings:** `concat`, `split`, `trim`, `lower`, `upper`, `replace`, `substring`, `starts-with`, `ends-with`, `contains`, `index-of`
+- **Template strings:** any `"..."` literal can embed `${expr}` — full z expressions evaluated in scope. Use `\$` for a literal `$`.
+- **Regex:** `regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split` — supports `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S`
 - **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
 - **I/O:** `print`, `read`, `write`, `append`, `delete`
 - **JSON:** `json:parse`, `json:stringify`
@@ -127,6 +129,55 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 ;   z myscript.z foo bar
 (argv)                     ; → ["foo", "bar"]
 ```
+
+## Optional modules
+
+Some functionality is gated behind compile-time flags so the core build
+stays lean. Pass the flag at build time to opt in.
+
+### Image manipulation — `IMAGE=1`
+
+Builtins: `img:create`, `img:resize`, `img:crop`, `img:rotate`, `img:circle`, `img:rect`, `img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`, `img:info`.
+
+```
+make IMAGE=1
+# or
+cmake -S . -B build -DZ_WITH_IMAGE=ON && cmake --build build
+# Windows:
+build.bat --image
+```
+
+Runtime requirement: **ImageMagick** must be on `PATH` (the module shells out
+to `magick` or `convert`).
+
+```
+macOS:    brew install imagemagick
+Linux:    sudo apt-get install imagemagick     # or dnf install ImageMagick
+Windows:  scoop install imagemagick             # or the official MSI installer
+```
+
+Quick taste:
+
+```lisp
+(img:create   "canvas.png" 400 300 "white")
+(img:circle   "canvas.png" "canvas.png" 200 150 60 "tomato")
+(img:rect     "canvas.png" "canvas.png"  20 220 360 60 "#eef" "black" 2)
+(img:info     "photo.jpg")                     ; → { width, height, format }
+(img:resize   "photo.jpg" "thumb.png" 256 256)
+(img:crop     "photo.jpg" "tile.png"  50 50 200 200)
+(img:rotate   "photo.jpg" "tilted.png" 45)
+(img:add-text "photo.jpg" "captioned.png" "hello" 20 20 32 "yellow")
+(img:bw        "photo.jpg" "scan.png" 50)              ; 1-bit, 50% threshold
+(img:grayscale "photo.jpg" "gray.png")                 ; 8-bit grayscale
+(img:to-pdf    (array "p1.png" "p2.png" "p3.png") "doc.pdf")
+```
+
+Colours are anything ImageMagick accepts — named (`"red"`), hex (`"#ff8800"`), RGB (`"rgb(0,128,255)"`), or `"none"` for transparency.
+
+**PDF gotcha on Linux:** some distros ship ImageMagick with PDF write disabled by default. If `img:to-pdf` fails with "not authorized", edit `/etc/ImageMagick-6/policy.xml` (or `-7`) and change the `pattern="PDF"` policy from `rights="none"` to `rights="read|write"`.
+
+If you call any `img:*` function without `IMAGE=1` set, you'll get a clean
+"undefined variable" error — the module simply isn't registered.
 
 ## Portability notes
 

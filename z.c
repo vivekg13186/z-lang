@@ -663,7 +663,15 @@ static void tokenize(Lexer* L) {
                         case '"': ch = '"';  break;
                         case '\\': ch = '\\'; break;
                         case '0': ch = '\0'; break;
-                        default: ch = esc;
+                        default:
+                            /* Preserve unknown escapes (\d, \$, etc.) so they
+                             * stay intact for regex strings and template-string
+                             * escaping. The parser strips the backslash from
+                             * \$ when building the AST. */
+                            if (bi + 1 >= sizeof(buf)) lex_error(L, "string too long");
+                            buf[bi++] = '\\';
+                            ch = esc;
+                            break;
                     }
                     L->pos += 2;
                 } else {
@@ -734,6 +742,89 @@ typedef struct {
 } Parser;
 
 static Value* parse_expr(Parser* p);
+static Value* parse_all(const char* src);  /* forward decl for template strings */
+
+/* Turn a string literal into either a plain V_STR or, if it contains
+ * unescaped ${...} interpolations, a (concat <part> <expr> <part>...) call.
+ * \$ is the escape for a literal $.  Other \X sequences (e.g. regex \d)
+ * are preserved verbatim with the backslash intact. */
+static Value* parse_string_or_template(const char* s) {
+    /* Decide first whether this is a template at all. */
+    int has_template = 0;
+    for (const char* p = s; *p; ) {
+        if (*p == '\\' && p[1]) { p += 2; continue; }
+        if (*p == '$' && p[1] == '{') { has_template = 1; break; }
+        p++;
+    }
+
+    if (!has_template) {
+        /* Plain string — but still process \$ → $ so users can write literal
+         * "$" without enabling interpolation. Everything else passes through. */
+        size_t n = strlen(s);
+        char* buf = (char*)malloc(n + 1);
+        size_t bi = 0;
+        for (const char* p = s; *p; ) {
+            if (*p == '\\' && p[1] == '$') { buf[bi++] = '$'; p += 2; }
+            else buf[bi++] = *p++;
+        }
+        buf[bi] = 0;
+        return v_str_take(buf);
+    }
+
+    /* Build (concat <literal> <expr> <literal> ...). */
+    Value* call = v_list();
+    vlist_push(&call->as.list, v_sym("concat"));
+
+    size_t cap = strlen(s) + 1;
+    char* lit = (char*)malloc(cap);
+    size_t li = 0;
+
+    for (const char* p = s; *p; ) {
+        /* \$ → literal $.  Other backslash escapes pass through unchanged. */
+        if (*p == '\\' && p[1] == '$') {
+            lit[li++] = '$';
+            p += 2;
+            continue;
+        }
+        if (*p == '$' && p[1] == '{') {
+            if (li > 0) { lit[li] = 0; vlist_push(&call->as.list, v_str(lit)); li = 0; }
+            p += 2;
+            const char* expr_start = p;
+            int depth = 1;
+            int in_str = 0;
+            while (*p && depth > 0) {
+                if (in_str) {
+                    if (*p == '\\' && p[1]) { p += 2; continue; }
+                    if (*p == '"') in_str = 0;
+                    p++;
+                } else if (*p == '"') { in_str = 1; p++; }
+                else if (*p == '{')   { depth++; p++; }
+                else if (*p == '}')   { depth--; if (depth) p++; }
+                else p++;
+            }
+            if (*p != '}') {
+                free(lit);
+                z_raise("template string: unterminated ${...}");
+            }
+            /* Recursively parse the embedded expression. parse_all wraps in
+             * (do <expr>) — we unwrap that if it's exactly one form. */
+            char* expr_src = str_dup_n(expr_start, p - expr_start);
+            Value* prog = parse_all(expr_src);
+            free(expr_src);
+            if (prog && prog->type == V_LIST && prog->as.list.len == 2) {
+                vlist_push(&call->as.list, prog->as.list.items[1]);
+            } else if (prog) {
+                vlist_push(&call->as.list, prog);
+            }
+            p++; /* skip closing } */
+            continue;
+        }
+        lit[li++] = *p++;
+    }
+    if (li > 0) { lit[li] = 0; vlist_push(&call->as.list, v_str(lit)); }
+    free(lit);
+    return call;
+}
 
 static Value* parse_list(Parser* p, TokKind close) {
     Value* node;
@@ -760,7 +851,7 @@ static Value* parse_expr(Parser* p) {
         case TK_LPAREN: p->pos++; return parse_list(p, TK_RPAREN);
         case TK_LBRACK: p->pos++; return parse_list(p, TK_RBRACK);
         case TK_NUM:    p->pos++; return v_num(t.num);
-        case TK_STR:    p->pos++; return v_str(t.text);
+        case TK_STR:    p->pos++; return parse_string_or_template(t.text);
         case TK_SYM: {
             p->pos++;
             if (strcmp(t.text, "true") == 0)  return v_true();
@@ -1527,6 +1618,236 @@ static Value* b_substring(int argc, Value** argv, Env* e) {
     return v_str_take(str_dup_n(s + start, end - start));
 }
 
+/* ============================================================
+ * Mini regex engine — supports:
+ *   . * + ? ^ $   [class] [^class]   \d \w \s \D \W \S
+ *   (no groups, no alternation, no back-references)
+ * Backtracking implementation, ~200 lines.
+ * ============================================================ */
+
+static int rx_match_class(const char* cls, int cls_len, char c) {
+    int i = 0, neg = 0;
+    if (cls_len > 0 && cls[0] == '^') { neg = 1; i = 1; }
+    int matched = 0;
+    while (i < cls_len) {
+        if (cls[i] == '\\' && i + 1 < cls_len) {
+            char e = cls[i + 1];
+            if      (e == 'd' &&  isdigit((unsigned char)c)) matched = 1;
+            else if (e == 'D' && !isdigit((unsigned char)c)) matched = 1;
+            else if (e == 'w' && (isalnum((unsigned char)c) || c == '_')) matched = 1;
+            else if (e == 'W' && !(isalnum((unsigned char)c) || c == '_')) matched = 1;
+            else if (e == 's' &&  isspace((unsigned char)c)) matched = 1;
+            else if (e == 'S' && !isspace((unsigned char)c)) matched = 1;
+            else if (e == 'n' && c == '\n') matched = 1;
+            else if (e == 't' && c == '\t') matched = 1;
+            else if (e == c) matched = 1;
+            i += 2;
+        } else if (i + 2 < cls_len && cls[i + 1] == '-' && cls[i + 2] != ']') {
+            if ((unsigned char)c >= (unsigned char)cls[i]
+             && (unsigned char)c <= (unsigned char)cls[i + 2]) matched = 1;
+            i += 3;
+        } else {
+            if (c == cls[i]) matched = 1;
+            i++;
+        }
+    }
+    return neg ? !matched : matched;
+}
+
+/* Length of a single regex atom (one char, escaped, or [class]). */
+static int rx_atom_len(const char* re) {
+    if (*re == '\\' && re[1]) return 2;
+    if (*re == '[') {
+        const char* end = strchr(re + 1, ']');
+        if (!end) return 1;  /* malformed */
+        return (int)(end - re + 1);
+    }
+    return 1;
+}
+
+static int rx_match_atom(const char* re, char c) {
+    if (*re == '\\' && re[1]) {
+        char e = re[1];
+        if (e == 'd') return isdigit((unsigned char)c) ? 1 : 0;
+        if (e == 'D') return !isdigit((unsigned char)c) ? 1 : 0;
+        if (e == 'w') return (isalnum((unsigned char)c) || c == '_') ? 1 : 0;
+        if (e == 'W') return !(isalnum((unsigned char)c) || c == '_') ? 1 : 0;
+        if (e == 's') return isspace((unsigned char)c) ? 1 : 0;
+        if (e == 'S') return !isspace((unsigned char)c) ? 1 : 0;
+        if (e == 'n') return c == '\n';
+        if (e == 't') return c == '\t';
+        return c == e;
+    }
+    if (*re == '.') return c != 0 && c != '\n';
+    if (*re == '[') {
+        const char* end = strchr(re + 1, ']');
+        if (!end) return 0;
+        return rx_match_class(re + 1, (int)(end - re - 1), c);
+    }
+    return c == *re;
+}
+
+static int rx_match_here(const char* re, const char* text, const char** out_end);
+
+static int rx_match_star(const char* atom, int atom_len, const char* rest,
+                         const char* text, const char** out_end) {
+    const char* t = text;
+    while (*t && rx_match_atom(atom, *t)) t++;
+    /* Greedy match, then backtrack down to zero. */
+    while (t >= text) {
+        if (rx_match_here(rest, t, out_end)) return 1;
+        if (t == text) break;
+        t--;
+    }
+    return 0;
+}
+
+static int rx_match_plus(const char* atom, int atom_len, const char* rest,
+                         const char* text, const char** out_end) {
+    if (!*text || !rx_match_atom(atom, *text)) return 0;
+    const char* t = text + 1;
+    while (*t && rx_match_atom(atom, *t)) t++;
+    while (t > text) {
+        if (rx_match_here(rest, t, out_end)) return 1;
+        t--;
+    }
+    return 0;
+}
+
+static int rx_match_question(const char* atom, int atom_len, const char* rest,
+                             const char* text, const char** out_end) {
+    if (*text && rx_match_atom(atom, *text)
+        && rx_match_here(rest, text + 1, out_end)) return 1;
+    return rx_match_here(rest, text, out_end);
+}
+
+static int rx_match_here(const char* re, const char* text, const char** out_end) {
+    while (*re) {
+        if (*re == '$' && re[1] == 0) {
+            if (*text == 0) { if (out_end) *out_end = text; return 1; }
+            return 0;
+        }
+        int al = rx_atom_len(re);
+        char next = re[al];
+        if (next == '*') return rx_match_star(re, al, re + al + 1, text, out_end);
+        if (next == '+') return rx_match_plus(re, al, re + al + 1, text, out_end);
+        if (next == '?') return rx_match_question(re, al, re + al + 1, text, out_end);
+
+        if (!*text) return 0;
+        if (!rx_match_atom(re, *text)) return 0;
+        re   += al;
+        text += 1;
+    }
+    if (out_end) *out_end = text;
+    return 1;
+}
+
+/* Find the first match in `text`. Returns 1 if found and fills out_start/out_end
+ * with byte offsets into `text`. */
+static int rx_search(const char* re, const char* text, int* out_start, int* out_end) {
+    if (*re == '^') {
+        const char* end_p = NULL;
+        if (rx_match_here(re + 1, text, &end_p)) {
+            if (out_start) *out_start = 0;
+            if (out_end)   *out_end = (int)(end_p - text);
+            return 1;
+        }
+        return 0;
+    }
+    const char* p = text;
+    while (1) {
+        const char* end_p = NULL;
+        if (rx_match_here(re, p, &end_p)) {
+            if (out_start) *out_start = (int)(p - text);
+            if (out_end)   *out_end = (int)(end_p - text);
+            return 1;
+        }
+        if (!*p) return 0;
+        p++;
+    }
+}
+
+/* ---------- regex builtins ---------- */
+
+static Value* b_rx_test(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("regex:test", 2);
+    const char* re = str_arg(argv[0], "regex:test");
+    const char* s  = str_arg(argv[1], "regex:test");
+    return v_bool(rx_search(re, s, NULL, NULL));
+}
+
+static Value* b_rx_match(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("regex:match", 2);
+    const char* re = str_arg(argv[0], "regex:match");
+    const char* s  = str_arg(argv[1], "regex:match");
+    int a, b;
+    if (!rx_search(re, s, &a, &b)) return v_null();
+    return v_str_take(str_dup_n(s + a, b - a));
+}
+
+static Value* b_rx_find_all(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("regex:find-all", 2);
+    const char* re = str_arg(argv[0], "regex:find-all");
+    const char* s  = str_arg(argv[1], "regex:find-all");
+    Value* out = v_array();
+    const char* p = s;
+    while (*p) {
+        int a, b;
+        if (!rx_search(re, p, &a, &b)) break;
+        if (b == a) {  /* zero-length match → advance one char to avoid loop */
+            if (!p[a]) break;
+            vlist_push(&out->as.list, v_str(""));
+            p += a + 1;
+        } else {
+            vlist_push(&out->as.list, v_str_take(str_dup_n(p + a, b - a)));
+            p += b;
+        }
+    }
+    return out;
+}
+
+static Value* b_rx_replace(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("regex:replace", 3);
+    const char* re  = str_arg(argv[0], "regex:replace");
+    const char* s   = str_arg(argv[1], "regex:replace");
+    const char* rep = str_arg(argv[2], "regex:replace");
+    StrBuf sb; sb_init(&sb);
+    const char* p = s;
+    while (*p) {
+        int a, b;
+        if (!rx_search(re, p, &a, &b)) break;
+        for (int i = 0; i < a; i++) sb_putc(&sb, p[i]);
+        sb_puts(&sb, rep);
+        if (b == a) {
+            if (p[a]) sb_putc(&sb, p[a]);
+            p += a + 1;
+            if (!*p) { sb_puts(&sb, ""); }
+        } else {
+            p += b;
+        }
+    }
+    sb_puts(&sb, p);
+    if (!sb.data) sb_putc(&sb, '\0');
+    return v_str_take(sb.data);
+}
+
+static Value* b_rx_split(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("regex:split", 2);
+    const char* re = str_arg(argv[0], "regex:split");
+    const char* s  = str_arg(argv[1], "regex:split");
+    Value* out = v_array();
+    const char* p = s;
+    while (*p) {
+        int a, b;
+        if (!rx_search(re, p, &a, &b)) break;
+        if (b == a) { p++; continue; }
+        vlist_push(&out->as.list, v_str_take(str_dup_n(p, a)));
+        p += b;
+    }
+    vlist_push(&out->as.list, v_str(p));
+    return out;
+}
+
 /* ---------- core ---------- */
 static Value* b_print(int argc, Value** argv, Env* e) {
     (void)e;
@@ -1858,26 +2179,154 @@ static Value* b_exit(int argc, Value** argv, Env* e) {
     return v_null();
 }
 
-/* ---------- HTTP — stubbed via curl in exec(), to keep deps minimal ---------- */
-static Value* b_http_get(int argc, Value** argv, Env* e) {
-    (void)e; EXPECT_ARGC("http:get", 1);
-    const char* url = str_arg(argv[0], "http:get");
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd), "curl -sS '%s'", url);
-    Value* fake[1] = { v_str(cmd) };
-    return b_exec(1, fake, e);
+/* ---------- HTTP — shells out to curl to keep core deps at zero ---------- */
+
+/* case-insensitive ASCII strcmp — used to detect a user-provided Content-Type */
+static int z_strcaseeq(const char* a, const char* b) {
+    while (*a && *b) {
+        char ca = (char)tolower((unsigned char)*a);
+        char cb = (char)tolower((unsigned char)*b);
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == 0 && *b == 0;
 }
+
+/* Append a -H "key: value" argument to the command being built.
+ * Values are wrapped in double quotes; embedded " is rejected as a
+ * safety measure (the workflow language doesn't try to be a shell). */
+static void http_append_header(StrBuf* sb, const char* key, const char* value, const char* fn) {
+    if (strchr(key, '"') || strchr(value, '"'))
+        z_raise("%s: header key/value may not contain a double quote", fn);
+    sb_puts(sb, " -H \"");
+    sb_puts(sb, key);
+    sb_puts(sb, ": ");
+    sb_puts(sb, value);
+    sb_putc(sb, '"');
+}
+
+/* Did the caller supply a Content-Type header? Lets us suppress the default. */
+static int http_has_content_type(Value* headers) {
+    if (!headers || headers->type != V_OBJECT) return 0;
+    for (size_t i = 0; i < headers->as.obj.len; i++) {
+        if (z_strcaseeq(headers->as.obj.keys[i], "Content-Type")) return 1;
+    }
+    return 0;
+}
+
+/* Walk a headers object and append each pair as a -H "..." flag. */
+static void http_emit_headers(StrBuf* sb, Value* headers, const char* fn) {
+    if (!headers || headers->type == V_NULL) return;
+    if (headers->type != V_OBJECT)
+        z_raise("%s: headers must be an object", fn);
+    for (size_t i = 0; i < headers->as.obj.len; i++) {
+        Value* v = headers->as.obj.vals[i];
+        const char* val_str;
+        char numbuf[64];
+        if (v->type == V_STR) val_str = v->as.s;
+        else if (v->type == V_NUM) {
+            double n = v->as.n;
+            if (n == (long long)n && n > -1e15 && n < 1e15)
+                snprintf(numbuf, sizeof(numbuf), "%lld", (long long)n);
+            else
+                snprintf(numbuf, sizeof(numbuf), "%g", n);
+            val_str = numbuf;
+        } else if (v->type == V_BOOL) {
+            val_str = v->as.b ? "true" : "false";
+        } else {
+            z_raise("%s: header values must be string/number/boolean", fn);
+            val_str = "";
+        }
+        http_append_header(sb, headers->as.obj.keys[i], val_str, fn);
+    }
+}
+
+/* (http:get url [headers]) */
+static Value* b_http_get(int argc, Value** argv, Env* e) {
+    if (argc < 1 || argc > 2)
+        z_raise("http:get: expected (http:get url [headers])");
+    const char* url = str_arg(argv[0], "http:get");
+    Value* headers = argc >= 2 ? argv[1] : NULL;
+
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "curl -sS");
+    http_emit_headers(&sb, headers, "http:get");
+    sb_puts(&sb, " \"");
+    sb_puts(&sb, url);
+    sb_putc(&sb, '"');
+
+    Value* cmd_arg[1] = { v_str_take(sb.data) };
+    return b_exec(1, cmd_arg, e);
+}
+
+/* Pick a directory for short-lived temp files. Honours $TMPDIR / %TEMP%. */
+static const char* z_tmp_dir(void) {
+#ifdef _WIN32
+    const char* d = getenv("TEMP"); if (d && *d) return d;
+    d = getenv("TMP");              if (d && *d) return d;
+    return ".";
+#else
+    const char* d = getenv("TMPDIR"); if (d && *d) return d;
+    return "/tmp";
+#endif
+}
+
+/* (http:post url body [headers])
+ *   body string  → sent verbatim; default Content-Type: text/plain
+ *   body object  → JSON-stringified; default Content-Type: application/json
+ * User-provided Content-Type in headers wins.
+ *
+ * Body is written to a temp file and passed to curl via --data-binary @<file>,
+ * so arbitrary content (JSON with quotes, binary data) works on every shell. */
 static Value* b_http_post(int argc, Value** argv, Env* e) {
-    (void)e; EXPECT_ARGC("http:post", 2);
+    if (argc < 2 || argc > 3)
+        z_raise("http:post: expected (http:post url body [headers])");
     const char* url = str_arg(argv[0], "http:post");
-    Value* body = argv[1];
-    Value* json_args[1] = { body };
-    Value* jstr = b_json_stringify(1, json_args, e);
-    char cmd[8192];
-    snprintf(cmd, sizeof(cmd), "curl -sS -X POST -H 'Content-Type: application/json' -d '%s' '%s'",
-             jstr->as.s, url);
-    Value* fake[1] = { v_str(cmd) };
-    return b_exec(1, fake, e);
+    Value* body    = argv[1];
+    Value* headers = argc >= 3 ? argv[2] : NULL;
+
+    /* Stringify body. */
+    const char* body_str;
+    Value* owned = NULL;
+    if (body->type == V_STR) {
+        body_str = body->as.s;
+    } else {
+        Value* json_args[1] = { body };
+        owned = b_json_stringify(1, json_args, e);
+        body_str = owned->as.s;
+    }
+
+    /* Write body to a temp file. */
+    char tmp_path[1024];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/z_http_body_%d_%d.tmp",
+             z_tmp_dir(), (int)time(NULL), rand());
+    FILE* tf = fopen(tmp_path, "wb");
+    if (!tf) z_raise("http:post: cannot create temp file '%s'", tmp_path);
+    if (*body_str) fwrite(body_str, 1, strlen(body_str), tf);
+    fclose(tf);
+
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "curl -sS -X POST");
+
+    /* Default Content-Type only if the user didn't supply one. */
+    if (!http_has_content_type(headers)) {
+        if (body->type == V_STR)
+            sb_puts(&sb, " -H \"Content-Type: text/plain\"");
+        else
+            sb_puts(&sb, " -H \"Content-Type: application/json\"");
+    }
+    http_emit_headers(&sb, headers, "http:post");
+
+    sb_puts(&sb, " --data-binary @\"");
+    sb_puts(&sb, tmp_path);
+    sb_puts(&sb, "\" \"");
+    sb_puts(&sb, url);
+    sb_putc(&sb, '"');
+
+    Value* cmd_arg[1] = { v_str_take(sb.data) };
+    Value* result = b_exec(1, cmd_arg, e);
+    remove(tmp_path);
+    return result;
 }
 
 /* ---------- import ---------- */
@@ -1899,6 +2348,193 @@ static Value* b_import(int argc, Value** argv, Env* e) {
     Value* r = run_source(buf, e);
     free(buf);
     return r;
+}
+
+/* ============================================================
+ * Optional modules (compiled in via -DZ_WITH_*)
+ * ============================================================ */
+
+#ifdef Z_WITH_IMAGE
+#include "z_img.h"
+#endif
+
+/* ============================================================
+ * (help) — cheat sheet printer
+ * ============================================================ */
+
+static int z_stdout_is_tty(void) {
+#ifdef _WIN32
+    return _isatty(_fileno(stdout));
+#else
+    return isatty(fileno(stdout));
+#endif
+}
+
+/* Chosen at the start of each help call so colour disappears under pipes. */
+static const char* HBOLD = "";
+static const char* HDIM  = "";
+static const char* HRST  = "";
+
+static void help_set_colors(void) {
+    if (z_stdout_is_tty()) {
+        HBOLD = "\x1b[1m";
+        HDIM  = "\x1b[2m";
+        HRST  = "\x1b[0m";
+    } else {
+        HBOLD = HDIM = HRST = "";
+    }
+}
+
+/* Each topic is one section. Printing a topic prints its block. */
+typedef struct { const char* key; const char* heading; const char* body; } HelpTopic;
+
+static const HelpTopic g_help_topics[] = {
+    { "forms", "special forms",
+      "  (do expr...)              sequential block; returns last value\n"
+      "  (if cond then [else])     conditional\n"
+      "  (while cond body...)      loop while cond is truthy\n"
+      "  (for var coll body...)    iterate over array/object\n"
+      "  (fn name (args) body...)  define named function\n"
+      "  (lambda (args) body...)   anonymous function\n"
+      "  (set name value)          define/assign variable\n"
+      "  (try body (catch e ...))  catch runtime errors\n"
+      "  (and ...) (or ...)        short-circuit logic, also && / ||\n"
+      "  (quote x)                 return x unevaluated\n"
+    },
+    { "arith", "arithmetic",
+      "  +  -  *  /  %             usual numeric ops; + also concatenates strings\n"
+    },
+    { "cmp", "comparison",
+      "  <  >  <=  >=  ==  !=      compare numbers or strings\n"
+    },
+    { "logic", "logic",
+      "  !  &&  ||                 also: (and ...) (or ...)\n"
+    },
+    { "arrays", "arrays & objects",
+      "  (array ...)               make an array\n"
+      "  (object \"k\" v ...)        make an object\n"
+      "  (get c k...)              index by key/position; chains: (get o \"a\" 0)\n"
+      "  (put c k v)               set element/field\n"
+      "  (push a x)  (pop a)       append / remove last\n"
+      "  (length c)                size of string, array, or object\n"
+      "  (keys o)  (values o)  (entries o)\n"
+      "  (map f a)  (filter pred a)  (reduce f a [init])\n"
+    },
+    { "strings", "strings",
+      "  (concat ...)              join values into a string\n"
+      "  (split sep s)             → array\n"
+      "  (trim s)  (lower s)  (upper s)\n"
+      "  (replace s old new)\n"
+      "  (substring s start [end])\n"
+      "  (starts-with s prefix)    (ends-with s suffix)\n"
+      "  (contains c x)            string / array / object key\n"
+      "  (index-of c x)            -1 if not found\n"
+      "  \"hello ${expr}\"           template strings — ${...} interpolates\n"
+      "                            any z expression; use \\$ for literal $\n"
+    },
+    { "regex", "regex",
+      "  (regex:test re s)         does the pattern match anywhere?\n"
+      "  (regex:match re s)        first match as string, or null\n"
+      "  (regex:find-all re s)     all matches → array\n"
+      "  (regex:replace re s rep)  replace all matches\n"
+      "  (regex:split re s)        split on pattern → array\n"
+      "  pattern syntax: . * + ? ^ $ [abc] [^abc] [a-z]\n"
+      "                  \\d \\w \\s  \\D \\W \\S\n"
+    },
+    { "math", "math",
+      "  (min ...)  (max ...)      variadic\n"
+      "  (floor n)  (ceil n)  (abs n)\n"
+      "  (random)                  0.0–1.0\n"
+    },
+    { "core", "core",
+      "  (print ...)               write to stdout\n"
+      "  (type v)                  → \"number\" / \"string\" / ...\n"
+      "  (assert cond [msg])\n"
+      "  (sleep seconds)\n"
+    },
+    { "file", "file I/O",
+      "  (read path)               → string\n"
+      "  (write path s)\n"
+      "  (append path s)\n"
+      "  (delete path)\n"
+    },
+    { "json", "JSON",
+      "  (json:parse s)            → value\n"
+      "  (json:stringify v)        → string\n"
+    },
+    { "http", "HTTP (via curl)",
+      "  (http:get url [headers])      → response body\n"
+      "  (http:post url body [headers])  body: object → JSON, string → raw\n"
+      "  headers: optional object, e.g. (object \"Authorization\" \"Bearer ...\")\n"
+    },
+    { "system", "system",
+      "  (now)                     unix seconds, float\n"
+      "  (timestamp)               unix seconds, int\n"
+      "  (format-date ts [fmt])    strftime — %Y %m %d %H %M %S %A %B ...\n"
+      "  (env name)                getenv\n"
+      "  (exec cmd)                → stdout+stderr as string\n"
+      "  (run cmd)                 → { stdout, code }\n"
+      "  (argv)                    args passed to the z program\n"
+      "  (exit [code])\n"
+      "  (import \"file.z\")         load and evaluate another file\n"
+    },
+    { "image", "images (optional — build with IMAGE=1)",
+      "  (img:create dst w h [color])\n"
+      "  (img:info path)           → { width, height, format }\n"
+      "  (img:resize src dst w h)\n"
+      "  (img:crop src dst x y w h)\n"
+      "  (img:rotate src dst deg)\n"
+      "  (img:circle src dst cx cy r fill [stroke] [width])\n"
+      "  (img:rect src dst x y w h fill [stroke] [width])\n"
+      "  (img:add-text src dst text [x y size color])\n"
+      "  (img:grayscale src dst)\n"
+      "  (img:bw src dst [threshold])\n"
+      "  (img:to-pdf images dst)\n"
+    },
+};
+
+#define HELP_TOPIC_COUNT (sizeof(g_help_topics) / sizeof(g_help_topics[0]))
+
+static void help_print_topic(const HelpTopic* t) {
+    printf("%s%s%s\n%s\n", HBOLD, t->heading, HRST, t->body);
+}
+
+static Value* b_help(int argc, Value** argv, Env* env) {
+    help_set_colors();
+    /* Only show the image section if it was actually compiled in. */
+    int has_image = env_lookup(env, "img:create") != NULL;
+
+    if (argc == 0) {
+        printf("%sz language cheat sheet%s\n", HBOLD, HRST);
+        printf("%s(help \"topic\") for one section · "
+               "topics: forms arith cmp logic arrays strings regex math core "
+               "file json http system%s%s\n\n",
+               HDIM, has_image ? " image" : "", HRST);
+        for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
+            if (strcmp(g_help_topics[i].key, "image") == 0 && !has_image) continue;
+            help_print_topic(&g_help_topics[i]);
+        }
+        return v_null();
+    }
+
+    if (argc == 1 && argv[0]->type == V_STR) {
+        const char* want = argv[0]->as.s;
+        for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
+            if (strcmp(g_help_topics[i].key, want) == 0) {
+                if (strcmp(want, "image") == 0 && !has_image) {
+                    printf("image module not compiled in — rebuild with IMAGE=1\n");
+                    return v_null();
+                }
+                help_print_topic(&g_help_topics[i]);
+                return v_null();
+            }
+        }
+        printf("no such help topic: %s\n", want);
+        return v_null();
+    }
+
+    z_raise("help: expected (help) or (help \"topic\")");
+    return v_null();
 }
 
 /* ============================================================
@@ -1946,6 +2582,12 @@ static void install_builtins(Env* env) {
     env_define(env, "ends-with",   v_native(b_ends_with));
     env_define(env, "contains",    v_native(b_contains));
     env_define(env, "index-of",    v_native(b_index_of));
+    /* regex */
+    env_define(env, "regex:test",     v_native(b_rx_test));
+    env_define(env, "regex:match",    v_native(b_rx_match));
+    env_define(env, "regex:find-all", v_native(b_rx_find_all));
+    env_define(env, "regex:replace",  v_native(b_rx_replace));
+    env_define(env, "regex:split",    v_native(b_rx_split));
     /* core */
     env_define(env, "print",  v_native(b_print));
     env_define(env, "type",   v_native(b_type));
@@ -1980,6 +2622,14 @@ static void install_builtins(Env* env) {
     env_define(env, "exit",        v_native(b_exit));
     /* modules */
     env_define(env, "import", v_native(b_import));
+
+    /* help */
+    env_define(env, "help", v_native(b_help));
+
+    /* Optional modules — only present if compiled in. */
+#ifdef Z_WITH_IMAGE
+    install_image_builtins(env);
+#endif
 }
 
 /* ============================================================
@@ -2322,12 +2972,26 @@ static void repl(Env* env) {
     hist_load();
 
     fputs("z (Mini Lisp Language) — REPL.\n", stdout);
-    fputs("  arrows: navigate history / move cursor   Ctrl-D: exit   Ctrl-C: cancel line\n", stdout);
+    fputs("  type `help` for a cheat sheet · arrows: history / cursor · Ctrl-D: exit · Ctrl-C: cancel\n", stdout);
 
     while (1) {
         int rc = z_read_line(balance ? "... " : "z> ", line, sizeof(line));
         if (rc == -1) { fputs("bye!\n", stdout); break; }
         if (rc == 1)  { acc[0] = '\0'; balance = 0; continue; }
+
+        /* REPL shortcuts: bare `help` or `?` (no parens) → call (help). */
+        if (balance == 0) {
+            char* p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            char* end = p + strlen(p);
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t'
+                            || end[-1] == '\n' || end[-1] == '\r')) end--;
+            size_t n = end - p;
+            if ((n == 4 && strncmp(p, "help", 4) == 0)
+                || (n == 1 && *p == '?')) {
+                strcpy(line, "(help)\n");
+            }
+        }
 
         /* Track paren balance for multi-line input. */
         for (char* p = line; *p; p++) {

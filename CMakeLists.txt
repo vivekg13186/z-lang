@@ -7,6 +7,12 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(z z.c)
 
+# Optional image module — set -DZ_WITH_IMAGE=ON when configuring.
+option(Z_WITH_IMAGE "Build with image manipulation builtins (requires ImageMagick at runtime)" OFF)
+if(Z_WITH_IMAGE)
+    target_compile_definitions(z PRIVATE Z_WITH_IMAGE)
+endif()
+
 if(MSVC)
     target_compile_definitions(z PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(z PRIVATE /W3)

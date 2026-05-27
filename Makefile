@@ -26,6 +26,14 @@ endif
 CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result
 LDFLAGS ?=
 
+# Optional modules: enable with `make IMAGE=1`.
+# Image support shells out to ImageMagick at runtime, so the only extra
+# build cost is a single conditional include.
+IMAGE ?= 0
+ifeq ($(IMAGE),1)
+    CFLAGS += -DZ_WITH_IMAGE
+endif
+
 .PHONY: all clean install test run info
 
 all: $(BIN)
@@ -35,6 +43,7 @@ info:
 	@echo "binary:   $(BIN)"
 	@echo "CC:       $(CC)"
 	@echo "CFLAGS:   $(CFLAGS)"
+	@echo "IMAGE:    $(IMAGE)"
 
 $(BIN): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)

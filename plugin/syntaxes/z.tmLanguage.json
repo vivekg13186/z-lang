@@ -31,7 +31,15 @@
       "patterns": [
         {
           "name": "constant.character.escape.z",
-          "match": "\\\\(n|t|r|\"|\\\\|0)"
+          "match": "\\\\(n|t|r|\"|\\\\|0|\\$)"
+        },
+        {
+          "name": "meta.template.expression.z",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.z" } },
+          "endCaptures":   { "0": { "name": "punctuation.section.embedded.end.z" } },
+          "patterns": [ { "include": "$self" } ]
         }
       ]
     },
@@ -132,7 +140,7 @@
     },
     "builtins-namespaced": {
       "name": "support.function.namespaced.z",
-      "match": "(?<=\\(|\\s)(json:parse|json:stringify|http:get|http:post)\\b"
+      "match": "(?<=\\(|\\s)(json:parse|json:stringify|http:get|http:post|regex:test|regex:match|regex:find-all|regex:replace|regex:split|img:create|img:resize|img:crop|img:rotate|img:circle|img:rect|img:add-text|img:bw|img:grayscale|img:to-pdf|img:info)\\b"
     },
     "operators": {
       "name": "keyword.operator.z",
