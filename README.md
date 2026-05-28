@@ -1,4 +1,4 @@
-# z — Mini Lisp   Language
+# z — Mini Script Language
 
 # Objective
 To make a small and functional script engine less than 5MB size.
@@ -16,9 +16,6 @@ Ships as two binaries:
 
 Source files use the `.z` extension.
 
- 
-
-If you'd rather build from source, read on.
 
 ## Build
 
