@@ -1,5 +1,9 @@
 # z — Mini Lisp   Language
 
+# Objective
+To make a small and functional script engine less than 5MB size.
+
+
 A tiny Lisp-flavoured language and tree-walking interpreter written in C99.
 No external dependencies beyond the standard library, and the same code
 builds on **macOS**, **Linux**, and **Windows**.
@@ -12,23 +16,7 @@ Ships as two binaries:
 
 Source files use the `.z` extension.
 
-## Install
-
-Once a release is published (see `packaging/README.md`):
-
-```
-# macOS / Linux — via Homebrew tap
-brew tap vivekg13186/z
-brew install z-lang
-
-# Windows — via Scoop bucket
-scoop bucket add z https://github.com/vivekg13186/scoop-z
-scoop install z-lang
-
-# Debian / Ubuntu — download and install .deb from GitHub Releases
-curl -LO https://github.com/vivekg13186/z_lang/releases/download/v0.1.0/z-lang_0.1.0_amd64.deb
-sudo apt install ./z-lang_0.1.0_amd64.deb
-```
+ 
 
 If you'd rather build from source, read on.
 
@@ -91,28 +79,7 @@ cmake --build build
 ./build/z examples/hello.z
 ```
 
-### Docker
-
-A multi-stage `Dockerfile` builds z, runs the test suite as a sanity
-check, and produces a slim runtime image with the binary plus the
-examples on board.
-
-``` 
-# Core build
-docker build -t z .
-
-# With the optional image module (also pulls in ImageMagick)
-docker build --build-arg IMAGE=1 -t z .
-
-# Run a script — mount your working directory at /work
-docker run --rm -v "$PWD:/work" z program.z
-
-# Or try a bundled example
-docker run --rm z /opt/z/examples/adults.z
-
-# Drop into the REPL
-docker run --rm -it z
-```
+ 
 
 ## Run
 
