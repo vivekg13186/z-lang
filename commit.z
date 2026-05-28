@@ -1,5 +1,0 @@
-(print "commit...")
-(print (exec "git add ."))
-(print (exec "git commit -m 'Update'"))
-(print (exec "git push"))
-(print "done.")

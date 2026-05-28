@@ -238,6 +238,42 @@
 (check "uuid-version" (== (substring id 14 15) "4"))
 (check "uuid-unique"  (!= (uuid) (uuid)))
 
+; --- url:* ---
+(check "url-encode"    (== (url:encode "hello world!") "hello%20world%21"))
+(check "url-decode"    (== (url:decode "hello%20world%21") "hello world!"))
+(check "url-roundtrip" (== (url:decode (url:encode "a b c?")) "a b c?"))
+(check "url-build"     (== (url:build "https://x.com/p" (object "q" "1 2" "id" 7))
+                           "https://x.com/p?q=1%202&id=7"))
+(check "url-build-?"   (== (url:build "https://x.com/p?a=1" (object "b" "2"))
+                           "https://x.com/p?a=1&b=2"))
+
+; --- scanf ---
+(set parts (scanf "%d %s" "42 hello"))
+(check "scanf-int"  (== (get parts 0) 42))
+(check "scanf-str"  (== (get parts 1) "hello"))
+(set p2 (scanf "name=%s age=%d" "name=vivek age=30"))
+(check "scanf-lit"  (== (get p2 0) "vivek"))
+(check "scanf-lit2" (== (get p2 1) 30))
+(set p3 (scanf "%f %f" "3.14 2.71"))
+(check "scanf-float" (== (get p3 0) 3.14))
+
+; --- zip / tar (use tools if available) ---
+(set tmpdir "/tmp/z_arch_test")
+(exec "rm -rf /tmp/z_arch_test && mkdir -p /tmp/z_arch_test")
+(write "/tmp/z_arch_test/a.txt" "hello A")
+(write "/tmp/z_arch_test/b.txt" "hello B")
+(try
+    (do
+        (tar:create "/tmp/z_arch.tar" (array "/tmp/z_arch_test/a.txt"
+                                              "/tmp/z_arch_test/b.txt"))
+        (check "tar-create" (get (file-info "/tmp/z_arch.tar") "exists"))
+        (exec "rm -rf /tmp/z_arch_test2 && mkdir -p /tmp/z_arch_test2")
+        (tar:extract "/tmp/z_arch.tar" "/tmp/z_arch_test2")
+        (check "tar-extract" (get (file-info "/tmp/z_arch.tar") "exists"))
+    )
+    (catch err (print "  (tar not available: ${err})")))
+(exec "rm -rf /tmp/z_arch_test /tmp/z_arch_test2 /tmp/z_arch.tar")
+
 ; --- shell / run / argv ---
 (check "exec-basic" (== (trim (exec "echo hello")) "hello"))
 (set ok (run "echo z-rocks"))

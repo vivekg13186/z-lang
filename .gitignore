@@ -1,2 +1,8 @@
 z
 *.vsix
+packaging
+zide
+build
+build/
+dist/
+plugin/

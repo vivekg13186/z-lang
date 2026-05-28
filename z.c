@@ -2075,6 +2075,313 @@ static Value* b_uuid(int argc, Value** argv, Env* e) {
     return v_str(out);
 }
 
+/* ============================================================
+ * URL handling (percent-encoding, query-string builder)
+ * ============================================================ */
+
+static int url_is_safe(char c) {
+    return isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+static void url_percent_encode(StrBuf* sb, const char* s) {
+    char hex[8];
+    for (const char* p = s; *p; p++) {
+        if (url_is_safe(*p)) sb_putc(sb, *p);
+        else {
+            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)*p);
+            sb_puts(sb, hex);
+        }
+    }
+}
+
+static int url_hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static Value* b_url_encode(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("url:encode", 1);
+    const char* s = str_arg(argv[0], "url:encode");
+    StrBuf sb; sb_init(&sb);
+    url_percent_encode(&sb, s);
+    if (!sb.data) sb.data = (char*)calloc(1, 1);
+    return v_str_take(sb.data);
+}
+
+static Value* b_url_decode(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("url:decode", 1);
+    const char* s = str_arg(argv[0], "url:decode");
+    StrBuf sb; sb_init(&sb);
+    for (const char* p = s; *p; p++) {
+        if (*p == '+') { sb_putc(&sb, ' '); continue; }
+        if (*p == '%' && p[1] && p[2]) {
+            int hi = url_hex_val(p[1]), lo = url_hex_val(p[2]);
+            if (hi >= 0 && lo >= 0) {
+                sb_putc(&sb, (char)((hi << 4) | lo));
+                p += 2;
+                continue;
+            }
+        }
+        sb_putc(&sb, *p);
+    }
+    if (!sb.data) sb.data = (char*)calloc(1, 1);
+    return v_str_take(sb.data);
+}
+
+/* (url:build base params) — appends ?k=v&k=v to base, encoding both sides.
+ * If base already contains a '?', the new params join with '&'. */
+static Value* b_url_build(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("url:build", 2);
+    const char* base = str_arg(argv[0], "url:build");
+    Value* params = argv[1];
+    if (params->type != V_OBJECT)
+        z_raise("url:build: params must be an object");
+
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, base);
+    int first = strchr(base, '?') == NULL;
+    for (size_t i = 0; i < params->as.obj.len; i++) {
+        char* val = value_to_cstr(params->as.obj.vals[i]);
+        sb_putc(&sb, first ? '?' : '&');
+        first = 0;
+        url_percent_encode(&sb, params->as.obj.keys[i]);
+        sb_putc(&sb, '=');
+        url_percent_encode(&sb, val);
+        free(val);
+    }
+    if (!sb.data) sb.data = (char*)calloc(1, 1);
+    return v_str_take(sb.data);
+}
+
+/* ============================================================
+ * zip / tar — shell-out wrappers
+ * ============================================================ */
+
+/* These are defined further down the file (in HTTP / b_exec). Forward them. */
+static char* z_capture_command(const char* cmd, int* out_code);
+static int   z_strcaseeq(const char* a, const char* b);
+
+static void archive_append_quoted(StrBuf* sb, const char* s, const char* fn) {
+    if (strchr(s, '"')) z_raise("%s: path may not contain a double quote", fn);
+    sb_putc(sb, '"');
+    sb_puts(sb, s);
+    sb_putc(sb, '"');
+}
+
+static Value* archive_run(const char* fn, char* cmd) {
+    int code = 0;
+    char* out = z_capture_command(cmd, &code);
+    if (code != 0) {
+        char* msg = out ? out : str_dup("");
+        size_t L = strlen(msg);
+        while (L && (msg[L-1] == '\n' || msg[L-1] == '\r')) msg[--L] = 0;
+        z_raise("%s: failed (code %d): %s", fn, code, msg);
+    }
+    free(out);
+    return v_true();
+}
+
+/* (zip:create archive files) */
+static Value* b_zip_create(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("zip:create", 2);
+    const char* archive = str_arg(argv[0], "zip:create");
+    Value* files = argv[1];
+    if (files->type != V_ARRAY && files->type != V_LIST)
+        z_raise("zip:create: files must be an array");
+
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "zip -q -r ");
+    archive_append_quoted(&sb, archive, "zip:create");
+    for (size_t i = 0; i < files->as.list.len; i++) {
+        Value* f = files->as.list.items[i];
+        if (f->type != V_STR) z_raise("zip:create: file paths must be strings");
+        sb_putc(&sb, ' ');
+        archive_append_quoted(&sb, f->as.s, "zip:create");
+    }
+    archive_run("zip:create", sb.data);
+    free(sb.data);
+    return v_str(archive);
+}
+
+/* (zip:extract archive [dest-dir]) */
+static Value* b_zip_extract(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 2)
+        z_raise("zip:extract: expected (zip:extract archive [dest])");
+    const char* archive = str_arg(argv[0], "zip:extract");
+    const char* dest    = argc >= 2 ? str_arg(argv[1], "zip:extract") : ".";
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "unzip -q -o ");
+    archive_append_quoted(&sb, archive, "zip:extract");
+    sb_puts(&sb, " -d ");
+    archive_append_quoted(&sb, dest, "zip:extract");
+    archive_run("zip:extract", sb.data);
+    free(sb.data);
+    return v_str(dest);
+}
+
+/* (tar:create archive files [compression])
+ * compression: "none" (default), "gz", "bz2", "xz" */
+static Value* b_tar_create(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2 || argc > 3)
+        z_raise("tar:create: expected (tar:create archive files [compression])");
+    const char* archive = str_arg(argv[0], "tar:create");
+    Value* files = argv[1];
+    if (files->type != V_ARRAY && files->type != V_LIST)
+        z_raise("tar:create: files must be an array");
+    const char* comp = argc >= 3 ? str_arg(argv[2], "tar:create") : "none";
+
+    const char* flag;
+    if      (z_strcaseeq(comp, "none") || !*comp) flag = "-cf";
+    else if (z_strcaseeq(comp, "gz")   || z_strcaseeq(comp, "gzip"))  flag = "-czf";
+    else if (z_strcaseeq(comp, "bz2")  || z_strcaseeq(comp, "bzip2")) flag = "-cjf";
+    else if (z_strcaseeq(comp, "xz")) flag = "-cJf";
+    else {
+        z_raise("tar:create: unknown compression '%s' (none, gz, bz2, xz)", comp);
+        return v_null();
+    }
+
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "tar ");
+    sb_puts(&sb, flag);
+    sb_putc(&sb, ' ');
+    archive_append_quoted(&sb, archive, "tar:create");
+    for (size_t i = 0; i < files->as.list.len; i++) {
+        Value* f = files->as.list.items[i];
+        if (f->type != V_STR) z_raise("tar:create: file paths must be strings");
+        sb_putc(&sb, ' ');
+        archive_append_quoted(&sb, f->as.s, "tar:create");
+    }
+    archive_run("tar:create", sb.data);
+    free(sb.data);
+    return v_str(archive);
+}
+
+/* (tar:extract archive [dest]) — auto-detects compression by extension. */
+static Value* b_tar_extract(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 2)
+        z_raise("tar:extract: expected (tar:extract archive [dest])");
+    const char* archive = str_arg(argv[0], "tar:extract");
+    const char* dest    = argc >= 2 ? str_arg(argv[1], "tar:extract") : ".";
+    StrBuf sb; sb_init(&sb);
+    sb_puts(&sb, "tar -xf ");
+    archive_append_quoted(&sb, archive, "tar:extract");
+    sb_puts(&sb, " -C ");
+    archive_append_quoted(&sb, dest, "tar:extract");
+    archive_run("tar:extract", sb.data);
+    free(sb.data);
+    return v_str(dest);
+}
+
+/* ============================================================
+ * scanf — parse formatted input into an array of values
+ * ============================================================ */
+
+/* Read one line from stdin, stripped of trailing newline. Returns a
+ * heap-allocated string the caller owns. */
+static char* z_read_stdin_line(void) {
+    size_t cap = 128, len = 0;
+    char* buf = (char*)malloc(cap);
+    int c;
+    while ((c = fgetc(stdin)) != EOF && c != '\n') {
+        if (len + 2 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        buf[len++] = (char)c;
+    }
+    if (len > 0 && buf[len-1] == '\r') len--;
+    buf[len] = 0;
+    return buf;
+}
+
+/* (input)         → next line of stdin
+ * (input "msg")   → prints msg, then reads next line of stdin */
+static Value* b_input(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc > 1) z_raise("input: expected (input) or (input prompt)");
+    if (argc == 1) {
+        const char* p = str_arg(argv[0], "input");
+        fputs(p, stdout);
+        fflush(stdout);
+    }
+    return v_str_take(z_read_stdin_line());
+}
+
+/* Supports: %d/%i (integer), %f/%g/%e (float), %s (until whitespace),
+ * %c (single character), %% (literal %).  Whitespace in the format matches
+ * any run of whitespace in the input; other literal characters must match
+ * exactly. Returns an array of parsed values.
+ *
+ *   (scanf fmt)         — reads one line from stdin and parses it
+ *   (scanf fmt string)  — parses the given string instead
+ */
+static Value* b_scanf(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 2) z_raise("scanf: expected (scanf fmt [input])");
+    const char* fmt = str_arg(argv[0], "scanf");
+    char* line_owned = NULL;
+    const char* in;
+    if (argc == 2) {
+        in = str_arg(argv[1], "scanf");
+    } else {
+        line_owned = z_read_stdin_line();
+        in = line_owned;
+    }
+
+    Value* out = v_array();
+    const char* f = fmt;
+    while (*f && *in) {
+        if (*f == '%') {
+            f++;
+            char spec = *f++;
+            if (spec == '%') {
+                if (*in != '%') break;
+                in++;
+                continue;
+            }
+            while (*in && isspace((unsigned char)*in)) in++;
+            if (!*in && spec != 's') break;
+
+            if (spec == 'd' || spec == 'i') {
+                char* end;
+                long n = strtol(in, &end, 10);
+                if (end == in) break;
+                vlist_push(&out->as.list, v_num((double)n));
+                in = end;
+            } else if (spec == 'f' || spec == 'g' || spec == 'e') {
+                char* end;
+                double n = strtod(in, &end);
+                if (end == in) break;
+                vlist_push(&out->as.list, v_num(n));
+                in = end;
+            } else if (spec == 's') {
+                const char* start = in;
+                while (*in && !isspace((unsigned char)*in)) in++;
+                if (in == start) break;
+                vlist_push(&out->as.list, v_str_take(str_dup_n(start, in - start)));
+            } else if (spec == 'c') {
+                char one[2] = { *in, 0 };
+                vlist_push(&out->as.list, v_str(one));
+                in++;
+            } else {
+                /* unsupported spec — bail out gracefully */
+                break;
+            }
+        } else if (isspace((unsigned char)*f)) {
+            while (*in && isspace((unsigned char)*in)) in++;
+            f++;
+        } else {
+            if (*in != *f) break;
+            in++;
+            f++;
+        }
+    }
+    free(line_owned);
+    return out;
+}
+
 /* ---------- core ---------- */
 static Value* b_print(int argc, Value** argv, Env* e) {
     (void)e;
@@ -2803,6 +3110,19 @@ static const HelpTopic g_help_topics[] = {
       "  (decrypt key cipher)      → original text\n"
       "  (uuid)                    → random v4 UUID\n"
     },
+    { "url", "URLs",
+      "  (url:encode s)            → percent-encoded string\n"
+      "  (url:decode s)            → decoded string\n"
+      "  (url:build base params)   → base + ?k=v&k=v from an object\n"
+    },
+    { "archive", "archives & parsing",
+      "  (zip:create archive files)         needs `zip`\n"
+      "  (zip:extract archive [dest])       needs `unzip`\n"
+      "  (tar:create archive files [comp])  comp: none|gz|bz2|xz\n"
+      "  (tar:extract archive [dest])\n"
+      "  (scanf fmt [input])       → array; reads stdin if input omitted\n"
+      "  (input [prompt])          → line of stdin (optional prompt)\n"
+    },
     { "http", "HTTP (via curl)",
       "  (http:get url [headers])      → response body\n"
       "  (http:post url body [headers])  body: object → JSON, string → raw\n"
@@ -2851,7 +3171,7 @@ static Value* b_help(int argc, Value** argv, Env* env) {
         printf("%sz language cheat sheet%s\n", HBOLD, HRST);
         printf("%s(help \"topic\") for one section · "
                "topics: forms arith cmp logic arrays strings regex math core "
-               "file json crypto http system%s%s\n\n",
+               "file json crypto url archive http system%s%s\n\n",
                HDIM, has_image ? " image" : "", HRST);
         for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
             if (strcmp(g_help_topics[i].key, "image") == 0 && !has_image) continue;
@@ -2961,6 +3281,18 @@ static void install_builtins(Env* env) {
     env_define(env, "encrypt",       v_native(b_encrypt));
     env_define(env, "decrypt",       v_native(b_decrypt));
     env_define(env, "uuid",          v_native(b_uuid));
+    /* URL handling */
+    env_define(env, "url:encode",    v_native(b_url_encode));
+    env_define(env, "url:decode",    v_native(b_url_decode));
+    env_define(env, "url:build",     v_native(b_url_build));
+    /* archives */
+    env_define(env, "zip:create",    v_native(b_zip_create));
+    env_define(env, "zip:extract",   v_native(b_zip_extract));
+    env_define(env, "tar:create",    v_native(b_tar_create));
+    env_define(env, "tar:extract",   v_native(b_tar_extract));
+    /* parsing / input */
+    env_define(env, "scanf",         v_native(b_scanf));
+    env_define(env, "input",         v_native(b_input));
     /* http */
     env_define(env, "http:get",  v_native(b_http_get));
     env_define(env, "http:post", v_native(b_http_post));

@@ -58,7 +58,10 @@ ifeq ($(IMAGE),1)
     CFLAGS += -DZ_WITH_IMAGE
 endif
 
-.PHONY: all clean install test run info zide
+.PHONY: all clean install test run info zide release deb
+
+# Override on the command line:  make release VERSION=0.2.0
+VERSION ?= 0.1.0
 
 all: $(BIN) $(IDE_BIN)
 
@@ -98,11 +101,13 @@ endif
 clean:
 ifeq ($(PLATFORM),windows)
 	-if exist dist rmdir /S /Q dist
+	-if exist build rmdir /S /Q build
 	-if exist z.exe del z.exe
 	-if exist zide.exe del zide.exe
+	-del /Q z-lang_*.deb 2>nul
 else
-	rm -rf dist
-	rm -f z zide
+	rm -rf dist build
+	rm -f z zide z-lang_*.deb
 endif
 
 install: $(BIN)
@@ -122,3 +127,17 @@ test: $(BIN)
 
 run: $(BIN)
 	$(BIN)
+
+# Stage z + zide + examples into a tarball/zip with a SHA-256, for uploading
+# as a GitHub Release asset. Run on each target platform you want to ship.
+release: $(BIN) $(IDE_BIN)
+	sh packaging/release.sh $(VERSION)
+
+# Build a Debian .deb from the current Linux dist/ binaries.
+deb: $(BIN) $(IDE_BIN)
+ifeq ($(PLATFORM),linux)
+	sh packaging/debian/build-deb.sh $(VERSION)
+else
+	@echo "deb: only builds on Linux (current platform: $(PLATFORM))"
+	@exit 1
+endif

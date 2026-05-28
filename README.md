@@ -12,6 +12,26 @@ Ships as two binaries:
 
 Source files use the `.z` extension.
 
+## Install
+
+Once a release is published (see `packaging/README.md`):
+
+```
+# macOS / Linux — via Homebrew tap
+brew tap vivekg13186/z
+brew install z-lang
+
+# Windows — via Scoop bucket
+scoop bucket add z https://github.com/vivekg13186/scoop-z
+scoop install z-lang
+
+# Debian / Ubuntu — download and install .deb from GitHub Releases
+curl -LO https://github.com/vivekg13186/z_lang/releases/download/v0.1.0/z-lang_0.1.0_amd64.deb
+sudo apt install ./z-lang_0.1.0_amd64.deb
+```
+
+If you'd rather build from source, read on.
+
 ## Build
 
 ### macOS / Linux
@@ -77,7 +97,7 @@ A multi-stage `Dockerfile` builds z, runs the test suite as a sanity
 check, and produces a slim runtime image with the binary plus the
 examples on board.
 
-```
+``` 
 # Core build
 docker build -t z .
 
@@ -182,6 +202,9 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
 - **JSON:** `json:parse`, `json:stringify`
 - **Encoding / crypto:** `base64:encode`, `base64:decode`, `encrypt`, `decrypt` (lightweight XTEA-CTR), `uuid` (v4)
+- **URL:** `url:encode`, `url:decode`, `url:build` (object → query string)
+- **Archives:** `zip:create`, `zip:extract` (need `zip`/`unzip`), `tar:create`, `tar:extract` (`gz`/`bz2`/`xz` compression)
+- **Parsing / input:** `scanf` — `%d %f %s %c` and literal text → array of values; reads stdin when called with just a format. `input [prompt]` reads a line from stdin.
 - **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
 - **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
 - **Errors:** `try`/`catch` with `setjmp`/`longjmp`

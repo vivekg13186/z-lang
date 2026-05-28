@@ -144,6 +144,31 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `decrypt` | `(decrypt "key" cipher)` |
 | `uuid` | `(uuid)` |
 
+## URL
+
+| Command | Example |
+| --- | --- |
+| `url:encode` | `(url:encode "hello world!")` |
+| `url:decode` | `(url:decode "hello%20world%21")` |
+| `url:build` | `(url:build "https://x.com/p" (object "q" "1 2"))` |
+
+## Archives
+
+| Command | Example |
+| --- | --- |
+| `zip:create` | `(zip:create "out.zip" (array "a.txt" "b.txt"))` |
+| `zip:extract` | `(zip:extract "out.zip" "./dest")` |
+| `tar:create` | `(tar:create "out.tgz" (array "a" "b") "gz")` |
+| `tar:extract` | `(tar:extract "out.tgz" "./dest")` |
+
+## Parsing
+
+| Command | Example |
+| --- | --- |
+| `scanf` (string) | `(scanf "name=%s age=%d" "name=vivek age=30")` |
+| `scanf` (stdin) | `(scanf "%d %s")` — reads one line from stdin |
+| `input` | `(input "your name: ")` |
+
 ## HTTP
 
 | Command | Example |
