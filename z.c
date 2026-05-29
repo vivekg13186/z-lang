@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "version.h"
 #include <math.h>
 #include <time.h>
 #include <stdarg.h>
@@ -3549,10 +3550,10 @@ static int z_read_line(const char* prompt, char* out, size_t outsz) {
         if (c == 12) { fputs("\x1b[H\x1b[2J", stdout); redraw_line(prompt, out, len, pos); continue; }
 
 #ifdef _WIN32
+        int arrow = 0;
         /* Windows arrow keys come as a 0 or 224 prefix then a scan code. */
         if (c == 0 || c == 224) {
             int s = read_key();
-            int arrow = 0;
             if      (s == 72) arrow = 'A';   /* up    */
             else if (s == 80) arrow = 'B';   /* down  */
             else if (s == 77) arrow = 'C';   /* right */
@@ -3568,14 +3569,14 @@ static int z_read_line(const char* prompt, char* out, size_t outsz) {
 
         /* ESC sequence (POSIX arrows) */
         if (c == 27) {
-            int s1, s2;
+            int s1 = 0, s2 = 0;
 #ifndef _WIN32
             s1 = read_key();
             if (s1 != '[' && s1 != 'O') continue;
             s2 = read_key();
             if (s2 < 0) continue;
 #else
-            (void)s1; (void)s2;
+            (void)s1;
 handle_arrow:
             s2 = arrow;
 #endif
@@ -3656,7 +3657,7 @@ static void repl(Env* env) {
 
     hist_load();
 
-    fputs("z — REPL.\n", stdout);
+    printf("z %s — REPL.\n", Z_VERSION);
     fputs("  type `help` for a cheat sheet · arrows: history / cursor · Ctrl-D: exit · Ctrl-C: cancel\n", stdout);
 
     while (1) {
@@ -3741,6 +3742,10 @@ int main(int argc, char** argv) {
 
     if (argc < 2) {
         repl(env);
+        return 0;
+    }
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
+        printf("z %s\n", Z_VERSION);
         return 0;
     }
     /* Run file */

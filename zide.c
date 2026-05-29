@@ -349,9 +349,9 @@ static void zide_repl(Env* env) {
     hist_load();
 
     if (ZIDE_COLOR) {
-        printf("%szide%s — enhanced REPL for z\n", C_PROMPT, C_RESET);
+        printf("%szide %s%s — enhanced REPL for z\n", C_PROMPT, Z_VERSION, C_RESET);
     } else {
-        printf("zide — enhanced REPL for z\n");
+        printf("zide %s — enhanced REPL for z\n", Z_VERSION);
     }
     printf("%ssyntax colouring · Tab completes · arrows for history · `help` for the cheat sheet · :q to quit%s\n",
            ZC(C_HINT), ZC(C_RESET));
@@ -428,6 +428,10 @@ int main(int argc, char** argv) {
     Env* env = env_new(NULL);
     install_builtins(env);
 
+    if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+        printf("zide %s\n", Z_VERSION);
+        return 0;
+    }
     /* `zide file.z` still just runs the file, like z. */
     if (argc >= 2) {
         char* src = read_file_all(argv[1]);

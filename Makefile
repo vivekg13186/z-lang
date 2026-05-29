@@ -18,6 +18,11 @@ ifeq ($(OS),Windows_NT)
     LDLIBS   :=
     # ARM Windows is uncommon; default to x86 unless overridden.
     ARCH     := x86
+    # Force cmd.exe so recipes like `if not exist ... mkdir ...` are parsed by
+    # cmd, not by sh from MSYS/Git Bash (which would otherwise report
+    # "syntax error: unexpected end of file" on the `if`).
+    SHELL       := cmd.exe
+    .SHELLFLAGS := /C
 else
     UNAME_S := $(shell uname -s)
     UNAME_M := $(shell uname -m)
