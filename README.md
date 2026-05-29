@@ -16,6 +16,15 @@ Ships as two binaries:
 
 Source files use the `.z` extension.
 
+## Install
+
+Windows users then run:
+
+```
+scoop bucket add z https://github.com/vivekg13186/scoop-z
+scoop install z-lang
+```
+
 
 ## Build
 
