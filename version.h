@@ -6,6 +6,6 @@
 #ifndef Z_VERSION_H
 #define Z_VERSION_H
 
-#define Z_VERSION "0.0.3"
+#define Z_VERSION "0.0.4"
 
 #endif /* Z_VERSION_H */

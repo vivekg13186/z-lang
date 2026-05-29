@@ -1396,6 +1396,93 @@ static Value* b_entries(int argc, Value** argv, Env* e) {
     return a;
 }
 
+/* (chunk array n) → array of sub-arrays of size n; final chunk may be smaller
+ * if the input length isn't a multiple of n. */
+static Value* b_chunk(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("chunk", 2);
+    Value* coll = argv[0];
+    if (coll->type != V_ARRAY && coll->type != V_LIST)
+        z_raise("chunk: expected array, got %s", type_name(coll));
+    double nd = num_arg(argv[1], "chunk");
+    if (nd < 1) z_raise("chunk: size must be >= 1");
+    size_t n = (size_t)nd;
+    Value* out = v_array();
+    size_t total = coll->as.list.len;
+    for (size_t i = 0; i < total; i += n) {
+        Value* part = v_array();
+        size_t end = i + n; if (end > total) end = total;
+        for (size_t j = i; j < end; j++)
+            vlist_push(&part->as.list, coll->as.list.items[j]);
+        vlist_push(&out->as.list, part);
+    }
+    return out;
+}
+
+/* (reverse x) — reverse a string or array; returns a new value. */
+static Value* b_reverse(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("reverse", 1);
+    Value* v = argv[0];
+    if (v->type == V_STR) {
+        size_t n = strlen(v->as.s);
+        char* out = (char*)malloc(n + 1);
+        if (!out) z_raise("reverse: out of memory");
+        for (size_t i = 0; i < n; i++) out[i] = v->as.s[n - 1 - i];
+        out[n] = '\0';
+        return v_str_take(out);
+    }
+    if (v->type == V_ARRAY || v->type == V_LIST) {
+        Value* out = v_array();
+        for (size_t i = v->as.list.len; i-- > 0; )
+            vlist_push(&out->as.list, v->as.list.items[i]);
+        return out;
+    }
+    z_raise("reverse: expected string or array, got %s", type_name(v));
+    return v_null();
+}
+
+/* qsort glue for (sort array [cmp]). qsort doesn't pass user data on C99, so
+ * we stash the comparator + env in file-local statics. Single-threaded. */
+static Value* g_sort_cmp_fn  = NULL;
+static Env*   g_sort_cmp_env = NULL;
+
+static int sort_default_cmp(const void* a, const void* b) {
+    return cmp_values(*(Value* const*)a, *(Value* const*)b);
+}
+static int sort_user_cmp(const void* a, const void* b) {
+    Value* args[2] = { *(Value* const*)a, *(Value* const*)b };
+    Value* r = apply(g_sort_cmp_fn, 2, args, g_sort_cmp_env);
+    if (r->type != V_NUM) z_raise("sort: comparator must return a number");
+    if (r->as.n < 0) return -1;
+    if (r->as.n > 0) return 1;
+    return 0;
+}
+
+/* (sort array)         → ascending, by default comparator
+ * (sort array cmp)     → comparator is (fn a b) → negative/zero/positive */
+static Value* b_sort(int argc, Value** argv, Env* e) {
+    if (argc != 1 && argc != 2) z_raise("sort: expected (sort array [cmp])");
+    Value* coll = argv[0];
+    if (coll->type != V_ARRAY && coll->type != V_LIST)
+        z_raise("sort: expected array, got %s", type_name(coll));
+    Value* out = v_array();
+    for (size_t i = 0; i < coll->as.list.len; i++)
+        vlist_push(&out->as.list, coll->as.list.items[i]);
+    if (out->as.list.len < 2) return out;
+    if (argc == 2) {
+        Value* prev_fn = g_sort_cmp_fn; Env* prev_env = g_sort_cmp_env;
+        g_sort_cmp_fn  = argv[1];
+        g_sort_cmp_env = e;
+        qsort(out->as.list.items, out->as.list.len, sizeof(Value*), sort_user_cmp);
+        g_sort_cmp_fn  = prev_fn;
+        g_sort_cmp_env = prev_env;
+    } else {
+        qsort(out->as.list.items, out->as.list.len, sizeof(Value*), sort_default_cmp);
+    }
+    return out;
+}
+
 /* ---------- higher-order ---------- */
 static Value* b_map(int argc, Value** argv, Env* e) {
     EXPECT_ARGC("map", 2);
@@ -1491,6 +1578,26 @@ static Value* b_concat(int argc, Value** argv, Env* e) {
     if (!sb.data) { sb.data = (char*)calloc(1, 1); sb.len = 0; }
     return v_str_take(sb.data);
 }
+/* (join sep array) — inverse of split. Stringifies each element and joins
+ * with sep. Argument order matches (split sep s). */
+static Value* b_join(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("join", 2);
+    const char* sep = str_arg(argv[0], "join");
+    Value* coll = argv[1];
+    if (coll->type != V_ARRAY && coll->type != V_LIST)
+        z_raise("join: expected array, got %s", type_name(coll));
+    StrBuf sb; sb_init(&sb);
+    for (size_t i = 0; i < coll->as.list.len; i++) {
+        if (i) sb_puts(&sb, sep);
+        char* part = value_to_cstr(coll->as.list.items[i]);
+        sb_puts(&sb, part);
+        free(part);
+    }
+    if (!sb.data) { sb.data = (char*)calloc(1, 1); sb.len = 0; }
+    return v_str_take(sb.data);
+}
+
 static Value* b_split(int argc, Value** argv, Env* e) {
     (void)e;
     EXPECT_ARGC("split", 2);
@@ -1652,6 +1759,67 @@ static Value* b_substring(int argc, Value** argv, Env* e) {
     if (end > len) end = len;
     if (end < start) end = start;
     return v_str_take(str_dup_n(s + start, end - start));
+}
+
+/* (levenshtein a b) → number of single-character edits (insert/delete/sub)
+ * needed to turn a into b. O(n*m) time, O(min(n,m)) space. */
+static Value* b_levenshtein(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("levenshtein", 2);
+    const char* a = str_arg(argv[0], "levenshtein");
+    const char* b = str_arg(argv[1], "levenshtein");
+    size_t la = strlen(a), lb = strlen(b);
+    if (la == 0) return v_num((double)lb);
+    if (lb == 0) return v_num((double)la);
+    /* Keep the shorter string as the column axis to bound memory. */
+    if (la < lb) { const char* t = a; a = b; b = t; size_t tl = la; la = lb; lb = tl; }
+    size_t* prev = (size_t*)malloc((lb + 1) * sizeof(size_t));
+    size_t* curr = (size_t*)malloc((lb + 1) * sizeof(size_t));
+    if (!prev || !curr) { free(prev); free(curr); z_raise("levenshtein: out of memory"); }
+    for (size_t j = 0; j <= lb; j++) prev[j] = j;
+    for (size_t i = 1; i <= la; i++) {
+        curr[0] = i;
+        for (size_t j = 1; j <= lb; j++) {
+            size_t cost = (a[i-1] == b[j-1]) ? 0 : 1;
+            size_t del = prev[j]     + 1;
+            size_t ins = curr[j-1]   + 1;
+            size_t sub = prev[j-1]   + cost;
+            size_t m = del < ins ? del : ins;
+            if (sub < m) m = sub;
+            curr[j] = m;
+        }
+        size_t* tmp = prev; prev = curr; curr = tmp;
+    }
+    size_t result = prev[lb];
+    free(prev); free(curr);
+    return v_num((double)result);
+}
+
+/* (between s from to) → substring between first occurrence of `from` and the
+ * next occurrence of `to` after it. Returns null if either marker is missing.
+ * Empty `from` anchors at the start of s; empty `to` extends to the end. */
+static Value* b_between(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("between", 3);
+    const char* s    = str_arg(argv[0], "between");
+    const char* from = str_arg(argv[1], "between");
+    const char* to   = str_arg(argv[2], "between");
+    const char* start;
+    if (*from == '\0') {
+        start = s;
+    } else {
+        start = strstr(s, from);
+        if (!start) return v_null();
+        start += strlen(from);
+    }
+    const char* end;
+    if (*to == '\0') {
+        end = start + strlen(start);
+    } else {
+        end = strstr(start, to);
+        if (!end) return v_null();
+    }
+    return v_str_take(str_dup_n(start, (size_t)(end - start)));
 }
 
 /* ============================================================
@@ -2061,6 +2229,256 @@ static Value* b_decrypt(int argc, Value** argv, Env* e) {
     return v_str_take((char*)out);
 }
 
+/* ============================================================
+ * Hash functions: MD5, SHA-256, SHA-512.
+ * Self-contained reference implementations; no OpenSSL dependency.
+ * All three return lowercase hex strings.
+ * ============================================================ */
+
+static const char z_hex_digits[] = "0123456789abcdef";
+
+static void z_hex_encode(const unsigned char* bytes, size_t n, char* out) {
+    for (size_t i = 0; i < n; i++) {
+        out[2*i]     = z_hex_digits[(bytes[i] >> 4) & 0xF];
+        out[2*i + 1] = z_hex_digits[bytes[i] & 0xF];
+    }
+    out[2*n] = '\0';
+}
+
+/* ---------- MD5 (RFC 1321) ---------- */
+
+static uint32_t z_md5_F(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); }
+static uint32_t z_md5_G(uint32_t x, uint32_t y, uint32_t z) { return (x & z) | (y & ~z); }
+static uint32_t z_md5_H(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
+static uint32_t z_md5_I(uint32_t x, uint32_t y, uint32_t z) { return y ^ (x | ~z); }
+static uint32_t z_rotl32(uint32_t x, unsigned n) { return (x << n) | (x >> (32 - n)); }
+
+static const uint32_t Z_MD5_K[64] = {
+    0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+    0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+    0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+    0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+    0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+    0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+    0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+    0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391
+};
+static const unsigned Z_MD5_S[64] = {
+    7,12,17,22, 7,12,17,22, 7,12,17,22, 7,12,17,22,
+    5, 9,14,20, 5, 9,14,20, 5, 9,14,20, 5, 9,14,20,
+    4,11,16,23, 4,11,16,23, 4,11,16,23, 4,11,16,23,
+    6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21
+};
+
+static void z_md5(const unsigned char* msg, size_t len, unsigned char out[16]) {
+    uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    /* Pad: append 0x80, zeros, then 8-byte little-endian length-in-bits. */
+    size_t new_len = ((len + 8) / 64 + 1) * 64;
+    unsigned char* m = (unsigned char*)calloc(new_len, 1);
+    if (!m) z_raise("md5: out of memory");
+    memcpy(m, msg, len);
+    m[len] = 0x80;
+    uint64_t bits = (uint64_t)len * 8;
+    for (int i = 0; i < 8; i++) m[new_len - 8 + i] = (unsigned char)(bits >> (8 * i));
+
+    for (size_t off = 0; off < new_len; off += 64) {
+        uint32_t M[16];
+        for (int i = 0; i < 16; i++) {
+            M[i] = (uint32_t)m[off + 4*i]
+                 | ((uint32_t)m[off + 4*i + 1] << 8)
+                 | ((uint32_t)m[off + 4*i + 2] << 16)
+                 | ((uint32_t)m[off + 4*i + 3] << 24);
+        }
+        uint32_t a = a0, b = b0, c = c0, d = d0;
+        for (int i = 0; i < 64; i++) {
+            uint32_t f; int g;
+            if      (i < 16) { f = z_md5_F(b, c, d); g = i; }
+            else if (i < 32) { f = z_md5_G(b, c, d); g = (5*i + 1) % 16; }
+            else if (i < 48) { f = z_md5_H(b, c, d); g = (3*i + 5) % 16; }
+            else             { f = z_md5_I(b, c, d); g = (7*i) % 16; }
+            uint32_t temp = d;
+            d = c;
+            c = b;
+            b = b + z_rotl32(a + f + Z_MD5_K[i] + M[g], Z_MD5_S[i]);
+            a = temp;
+        }
+        a0 += a; b0 += b; c0 += c; d0 += d;
+    }
+    free(m);
+    uint32_t H[4] = { a0, b0, c0, d0 };
+    for (int i = 0; i < 4; i++) {
+        out[4*i]     = (unsigned char)(H[i]);
+        out[4*i + 1] = (unsigned char)(H[i] >> 8);
+        out[4*i + 2] = (unsigned char)(H[i] >> 16);
+        out[4*i + 3] = (unsigned char)(H[i] >> 24);
+    }
+}
+
+/* ---------- SHA-256 (FIPS 180-4) ---------- */
+
+static const uint32_t Z_SHA256_K[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+static uint32_t z_rotr32(uint32_t x, unsigned n) { return (x >> n) | (x << (32 - n)); }
+
+static void z_sha256(const unsigned char* msg, size_t len, unsigned char out[32]) {
+    uint32_t H[8] = {
+        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+        0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
+    };
+    /* Pad: append 0x80, zeros, then 8-byte big-endian length-in-bits. */
+    size_t new_len = ((len + 8) / 64 + 1) * 64;
+    unsigned char* m = (unsigned char*)calloc(new_len, 1);
+    if (!m) z_raise("sha256: out of memory");
+    memcpy(m, msg, len);
+    m[len] = 0x80;
+    uint64_t bits = (uint64_t)len * 8;
+    for (int i = 0; i < 8; i++) m[new_len - 1 - i] = (unsigned char)(bits >> (8 * i));
+
+    for (size_t off = 0; off < new_len; off += 64) {
+        uint32_t W[64];
+        for (int i = 0; i < 16; i++) {
+            W[i] = ((uint32_t)m[off + 4*i]     << 24)
+                 | ((uint32_t)m[off + 4*i + 1] << 16)
+                 | ((uint32_t)m[off + 4*i + 2] << 8)
+                 |  (uint32_t)m[off + 4*i + 3];
+        }
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = z_rotr32(W[i-15], 7) ^ z_rotr32(W[i-15], 18) ^ (W[i-15] >> 3);
+            uint32_t s1 = z_rotr32(W[i-2], 17) ^ z_rotr32(W[i-2], 19)  ^ (W[i-2] >> 10);
+            W[i] = W[i-16] + s0 + W[i-7] + s1;
+        }
+        uint32_t a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t S1 = z_rotr32(e, 6) ^ z_rotr32(e, 11) ^ z_rotr32(e, 25);
+            uint32_t ch = (e & f) ^ (~e & g);
+            uint32_t t1 = h + S1 + ch + Z_SHA256_K[i] + W[i];
+            uint32_t S0 = z_rotr32(a, 2) ^ z_rotr32(a, 13) ^ z_rotr32(a, 22);
+            uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t t2 = S0 + mj;
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+        }
+        H[0]+=a; H[1]+=b; H[2]+=c; H[3]+=d; H[4]+=e; H[5]+=f; H[6]+=g; H[7]+=h;
+    }
+    free(m);
+    for (int i = 0; i < 8; i++) {
+        out[4*i]     = (unsigned char)(H[i] >> 24);
+        out[4*i + 1] = (unsigned char)(H[i] >> 16);
+        out[4*i + 2] = (unsigned char)(H[i] >> 8);
+        out[4*i + 3] = (unsigned char)(H[i]);
+    }
+}
+
+/* ---------- SHA-512 (FIPS 180-4) ---------- */
+
+static const uint64_t Z_SHA512_K[80] = {
+    0x428a2f98d728ae22ULL,0x7137449123ef65cdULL,0xb5c0fbcfec4d3b2fULL,0xe9b5dba58189dbbcULL,
+    0x3956c25bf348b538ULL,0x59f111f1b605d019ULL,0x923f82a4af194f9bULL,0xab1c5ed5da6d8118ULL,
+    0xd807aa98a3030242ULL,0x12835b0145706fbeULL,0x243185be4ee4b28cULL,0x550c7dc3d5ffb4e2ULL,
+    0x72be5d74f27b896fULL,0x80deb1fe3b1696b1ULL,0x9bdc06a725c71235ULL,0xc19bf174cf692694ULL,
+    0xe49b69c19ef14ad2ULL,0xefbe4786384f25e3ULL,0x0fc19dc68b8cd5b5ULL,0x240ca1cc77ac9c65ULL,
+    0x2de92c6f592b0275ULL,0x4a7484aa6ea6e483ULL,0x5cb0a9dcbd41fbd4ULL,0x76f988da831153b5ULL,
+    0x983e5152ee66dfabULL,0xa831c66d2db43210ULL,0xb00327c898fb213fULL,0xbf597fc7beef0ee4ULL,
+    0xc6e00bf33da88fc2ULL,0xd5a79147930aa725ULL,0x06ca6351e003826fULL,0x142929670a0e6e70ULL,
+    0x27b70a8546d22ffcULL,0x2e1b21385c26c926ULL,0x4d2c6dfc5ac42aedULL,0x53380d139d95b3dfULL,
+    0x650a73548baf63deULL,0x766a0abb3c77b2a8ULL,0x81c2c92e47edaee6ULL,0x92722c851482353bULL,
+    0xa2bfe8a14cf10364ULL,0xa81a664bbc423001ULL,0xc24b8b70d0f89791ULL,0xc76c51a30654be30ULL,
+    0xd192e819d6ef5218ULL,0xd69906245565a910ULL,0xf40e35855771202aULL,0x106aa07032bbd1b8ULL,
+    0x19a4c116b8d2d0c8ULL,0x1e376c085141ab53ULL,0x2748774cdf8eeb99ULL,0x34b0bcb5e19b48a8ULL,
+    0x391c0cb3c5c95a63ULL,0x4ed8aa4ae3418acbULL,0x5b9cca4f7763e373ULL,0x682e6ff3d6b2b8a3ULL,
+    0x748f82ee5defb2fcULL,0x78a5636f43172f60ULL,0x84c87814a1f0ab72ULL,0x8cc702081a6439ecULL,
+    0x90befffa23631e28ULL,0xa4506cebde82bde9ULL,0xbef9a3f7b2c67915ULL,0xc67178f2e372532bULL,
+    0xca273eceea26619cULL,0xd186b8c721c0c207ULL,0xeada7dd6cde0eb1eULL,0xf57d4f7fee6ed178ULL,
+    0x06f067aa72176fbaULL,0x0a637dc5a2c898a6ULL,0x113f9804bef90daeULL,0x1b710b35131c471bULL,
+    0x28db77f523047d84ULL,0x32caab7b40c72493ULL,0x3c9ebe0a15c9bebcULL,0x431d67c49c100d4cULL,
+    0x4cc5d4becb3e42b6ULL,0x597f299cfc657e2aULL,0x5fcb6fab3ad6faecULL,0x6c44198c4a475817ULL
+};
+
+static uint64_t z_rotr64(uint64_t x, unsigned n) { return (x >> n) | (x << (64 - n)); }
+
+static void z_sha512(const unsigned char* msg, size_t len, unsigned char out[64]) {
+    uint64_t H[8] = {
+        0x6a09e667f3bcc908ULL,0xbb67ae8584caa73bULL,0x3c6ef372fe94f82bULL,0xa54ff53a5f1d36f1ULL,
+        0x510e527fade682d1ULL,0x9b05688c2b3e6c1fULL,0x1f83d9abfb41bd6bULL,0x5be0cd19137e2179ULL
+    };
+    /* Pad: append 0x80, zeros, then 16-byte big-endian length-in-bits.
+     * We only support inputs that fit in 64 bits — upper 8 bytes are zero. */
+    size_t new_len = ((len + 16) / 128 + 1) * 128;
+    unsigned char* m = (unsigned char*)calloc(new_len, 1);
+    if (!m) z_raise("sha512: out of memory");
+    memcpy(m, msg, len);
+    m[len] = 0x80;
+    uint64_t bits = (uint64_t)len * 8;
+    for (int i = 0; i < 8; i++) m[new_len - 1 - i] = (unsigned char)(bits >> (8 * i));
+
+    for (size_t off = 0; off < new_len; off += 128) {
+        uint64_t W[80];
+        for (int i = 0; i < 16; i++) {
+            W[i] = 0;
+            for (int b = 0; b < 8; b++)
+                W[i] = (W[i] << 8) | m[off + 8*i + b];
+        }
+        for (int i = 16; i < 80; i++) {
+            uint64_t s0 = z_rotr64(W[i-15], 1) ^ z_rotr64(W[i-15], 8) ^ (W[i-15] >> 7);
+            uint64_t s1 = z_rotr64(W[i-2], 19) ^ z_rotr64(W[i-2], 61) ^ (W[i-2] >> 6);
+            W[i] = W[i-16] + s0 + W[i-7] + s1;
+        }
+        uint64_t a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+        for (int i = 0; i < 80; i++) {
+            uint64_t S1 = z_rotr64(e, 14) ^ z_rotr64(e, 18) ^ z_rotr64(e, 41);
+            uint64_t ch = (e & f) ^ (~e & g);
+            uint64_t t1 = h + S1 + ch + Z_SHA512_K[i] + W[i];
+            uint64_t S0 = z_rotr64(a, 28) ^ z_rotr64(a, 34) ^ z_rotr64(a, 39);
+            uint64_t mj = (a & b) ^ (a & c) ^ (b & c);
+            uint64_t t2 = S0 + mj;
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+        }
+        H[0]+=a; H[1]+=b; H[2]+=c; H[3]+=d; H[4]+=e; H[5]+=f; H[6]+=g; H[7]+=h;
+    }
+    free(m);
+    for (int i = 0; i < 8; i++) {
+        for (int b = 0; b < 8; b++)
+            out[8*i + b] = (unsigned char)(H[i] >> (56 - 8*b));
+    }
+}
+
+/* (md5 s) (sha256 s) (sha512 s) — hex digest of the input string. */
+static Value* b_md5(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("md5", 1);
+    const char* s = str_arg(argv[0], "md5");
+    unsigned char d[16];
+    z_md5((const unsigned char*)s, strlen(s), d);
+    char hex[33];
+    z_hex_encode(d, 16, hex);
+    return v_str(hex);
+}
+static Value* b_sha256(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("sha256", 1);
+    const char* s = str_arg(argv[0], "sha256");
+    unsigned char d[32];
+    z_sha256((const unsigned char*)s, strlen(s), d);
+    char hex[65];
+    z_hex_encode(d, 32, hex);
+    return v_str(hex);
+}
+static Value* b_sha512(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("sha512", 1);
+    const char* s = str_arg(argv[0], "sha512");
+    unsigned char d[64];
+    z_sha512((const unsigned char*)s, strlen(s), d);
+    char hex[129];
+    z_hex_encode(d, 64, hex);
+    return v_str(hex);
+}
+
 /* (uuid) → random RFC-4122 version-4 UUID string. */
 static Value* b_uuid(int argc, Value** argv, Env* e) {
     (void)e; (void)argc; (void)argv;
@@ -2446,6 +2864,34 @@ static Value* b_abs(int argc, Value** argv, Env* e) {
     return v_num(fabs(num_arg(argv[0], "abs")));
 }
 
+/* ---- trig (arguments and results in radians) ---- */
+static Value* b_sin (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("sin",1); return v_num(sin (num_arg(argv[0],"sin")));}
+static Value* b_cos (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("cos",1); return v_num(cos (num_arg(argv[0],"cos")));}
+static Value* b_tan (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("tan",1); return v_num(tan (num_arg(argv[0],"tan")));}
+static Value* b_asin(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("asin",1);return v_num(asin(num_arg(argv[0],"asin")));}
+static Value* b_acos(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("acos",1);return v_num(acos(num_arg(argv[0],"acos")));}
+static Value* b_atan(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("atan",1);return v_num(atan(num_arg(argv[0],"atan")));}
+static Value* b_atan2(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("atan2",2);
+    return v_num(atan2(num_arg(argv[0],"atan2"), num_arg(argv[1],"atan2")));}
+/* ---- hyperbolic ---- */
+static Value* b_sinh(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("sinh",1);return v_num(sinh(num_arg(argv[0],"sinh")));}
+static Value* b_cosh(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("cosh",1);return v_num(cosh(num_arg(argv[0],"cosh")));}
+static Value* b_tanh(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("tanh",1);return v_num(tanh(num_arg(argv[0],"tanh")));}
+/* ---- exp / log / power ---- */
+static Value* b_sqrt(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("sqrt",1);return v_num(sqrt(num_arg(argv[0],"sqrt")));}
+static Value* b_cbrt(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("cbrt",1);return v_num(cbrt(num_arg(argv[0],"cbrt")));}
+static Value* b_exp (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("exp",1); return v_num(exp (num_arg(argv[0],"exp")));}
+static Value* b_log (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("log",1); return v_num(log (num_arg(argv[0],"log")));}
+static Value* b_log2(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("log2",1);return v_num(log2(num_arg(argv[0],"log2")));}
+static Value* b_log10(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("log10",1);return v_num(log10(num_arg(argv[0],"log10")));}
+static Value* b_pow (int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("pow",2); return v_num(pow(num_arg(argv[0],"pow"), num_arg(argv[1],"pow")));}
+/* ---- rounding / sign ---- */
+static Value* b_round(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("round",1);return v_num(round(num_arg(argv[0],"round")));}
+static Value* b_trunc(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("trunc",1);return v_num(trunc(num_arg(argv[0],"trunc")));}
+static Value* b_sign(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("sign",1);
+    double x = num_arg(argv[0],"sign");
+    return v_num(x > 0 ? 1.0 : (x < 0 ? -1.0 : 0.0));}
+
 /* ---------- file I/O ---------- */
 static Value* b_read(int argc, Value** argv, Env* e) {
     (void)e; EXPECT_ARGC("read", 1);
@@ -2461,6 +2907,43 @@ static Value* b_read(int argc, Value** argv, Env* e) {
     fclose(f);
     return v_str_take(buf);
 }
+/* (read-lines path) → array of lines, with trailing \r and \n stripped.
+ * A trailing newline does not produce an empty final element. */
+static Value* b_read_lines(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("read-lines", 1);
+    const char* path = str_arg(argv[0], "read-lines");
+    FILE* f = fopen(path, "rb");
+    if (!f) z_raise("read-lines: cannot open '%s': %s", path, strerror(errno));
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); z_raise("read-lines: out of memory"); }
+    size_t r = fread(buf, 1, (size_t)n, f);
+    buf[r] = '\0';
+    fclose(f);
+    Value* out = v_array();
+    const char* start = buf;
+    const char* p     = buf;
+    while (*p) {
+        if (*p == '\n') {
+            size_t len = (size_t)(p - start);
+            if (len > 0 && start[len - 1] == '\r') len--;   /* strip CR */
+            vlist_push(&out->as.list, v_str_take(str_dup_n(start, len)));
+            start = p + 1;
+        }
+        p++;
+    }
+    /* Final line without trailing newline. */
+    if (p != start) {
+        size_t len = (size_t)(p - start);
+        if (len > 0 && start[len - 1] == '\r') len--;
+        vlist_push(&out->as.list, v_str_take(str_dup_n(start, len)));
+    }
+    free(buf);
+    return out;
+}
+
 static Value* b_write(int argc, Value** argv, Env* e) {
     (void)e; EXPECT_ARGC("write", 2);
     const char* path = str_arg(argv[0], "write");
@@ -3056,14 +3539,20 @@ static const HelpTopic g_help_topics[] = {
       "  (push a x)  (pop a)       append / remove last\n"
       "  (length c)                size of string, array, or object\n"
       "  (keys o)  (values o)  (entries o)\n"
+      "  (reverse s-or-a)          reverse a string or array\n"
+      "  (sort a [cmp])            sorted copy; cmp is (fn x y) → neg/0/pos\n"
+      "  (chunk a n)               split into sub-arrays of size n\n"
       "  (map f a)  (filter pred a)  (reduce f a [init])\n"
     },
     { "strings", "strings",
       "  (concat ...)              join values into a string\n"
       "  (split sep s)             → array\n"
+      "  (join sep a)              join array elements with sep\n"
       "  (trim s)  (lower s)  (upper s)\n"
       "  (replace s old new)\n"
       "  (substring s start [end])\n"
+      "  (between s from to)       substring between markers, null if missing\n"
+      "  (levenshtein a b)         edit distance between two strings\n"
       "  (starts-with s prefix)    (ends-with s suffix)\n"
       "  (contains c x)            string / array / object key\n"
       "  (index-of c x)            -1 if not found\n"
@@ -3081,7 +3570,14 @@ static const HelpTopic g_help_topics[] = {
     },
     { "math", "math",
       "  (min ...)  (max ...)      variadic\n"
-      "  (floor n)  (ceil n)  (abs n)\n"
+      "  (floor n)  (ceil n)  (round n)  (trunc n)\n"
+      "  (abs n)  (sign n)  (mod a b)\n"
+      "  (sqrt n)  (cbrt n)  (pow b e)\n"
+      "  (exp n)  (log n)  (log2 n)  (log10 n)\n"
+      "  (sin x)  (cos x)  (tan x)         radians\n"
+      "  (asin x)  (acos x)  (atan x)  (atan2 y x)\n"
+      "  (sinh x)  (cosh x)  (tanh x)\n"
+      "  pi  e                              constants\n"
       "  (random)                  0.0–1.0\n"
     },
     { "core", "core",
@@ -3092,6 +3588,7 @@ static const HelpTopic g_help_topics[] = {
     },
     { "file", "file I/O",
       "  (read path)               → string\n"
+      "  (read-lines path)         → array of strings (CRLF/LF stripped)\n"
       "  (write path s)\n"
       "  (append path s)\n"
       "  (delete path)\n"
@@ -3110,6 +3607,9 @@ static const HelpTopic g_help_topics[] = {
       "  (encrypt key text)        → base64 ciphertext (lightweight XTEA-CTR)\n"
       "  (decrypt key cipher)      → original text\n"
       "  (uuid)                    → random v4 UUID\n"
+      "  (md5 s)                   → 32-char hex digest\n"
+      "  (sha256 s)                → 64-char hex digest\n"
+      "  (sha512 s)                → 128-char hex digest\n"
     },
     { "url", "URLs",
       "  (url:encode s)            → percent-encoded string\n"
@@ -3146,6 +3646,8 @@ static const HelpTopic g_help_topics[] = {
       "  (img:resize src dst w h)\n"
       "  (img:crop src dst x y w h)\n"
       "  (img:rotate src dst deg)\n"
+      "  (img:compose base overlay dst x y)\n"
+      "  (img:replace-color src dst from to [fuzz])\n"
       "  (img:circle src dst cx cy r fill [stroke] [width])\n"
       "  (img:rect src dst x y w h fill [stroke] [width])\n"
       "  (img:add-text src dst text [x y size color])\n"
@@ -3231,17 +3733,23 @@ static void install_builtins(Env* env) {
     env_define(env, "keys",    v_native(b_keys));
     env_define(env, "values",  v_native(b_values));
     env_define(env, "entries", v_native(b_entries));
+    env_define(env, "reverse", v_native(b_reverse));
+    env_define(env, "sort",    v_native(b_sort));
+    env_define(env, "chunk",   v_native(b_chunk));
     env_define(env, "map",     v_native(b_map));
     env_define(env, "filter",  v_native(b_filter));
     env_define(env, "reduce",  v_native(b_reduce));
     /* string */
     env_define(env, "concat",    v_native(b_concat));
+    env_define(env, "join",      v_native(b_join));
     env_define(env, "split",     v_native(b_split));
     env_define(env, "trim",      v_native(b_trim));
     env_define(env, "lower",     v_native(b_lower));
     env_define(env, "upper",     v_native(b_upper));
     env_define(env, "replace",     v_native(b_replace));
     env_define(env, "substring",   v_native(b_substring));
+    env_define(env, "between",     v_native(b_between));
+    env_define(env, "levenshtein", v_native(b_levenshtein));
     env_define(env, "starts-with", v_native(b_starts_with));
     env_define(env, "ends-with",   v_native(b_ends_with));
     env_define(env, "contains",    v_native(b_contains));
@@ -3264,8 +3772,36 @@ static void install_builtins(Env* env) {
     env_define(env, "ceil",   v_native(b_ceil));
     env_define(env, "random", v_native(b_random));
     env_define(env, "abs",    v_native(b_abs));
+    /* trig */
+    env_define(env, "sin",    v_native(b_sin));
+    env_define(env, "cos",    v_native(b_cos));
+    env_define(env, "tan",    v_native(b_tan));
+    env_define(env, "asin",   v_native(b_asin));
+    env_define(env, "acos",   v_native(b_acos));
+    env_define(env, "atan",   v_native(b_atan));
+    env_define(env, "atan2",  v_native(b_atan2));
+    env_define(env, "sinh",   v_native(b_sinh));
+    env_define(env, "cosh",   v_native(b_cosh));
+    env_define(env, "tanh",   v_native(b_tanh));
+    /* exp / log / power */
+    env_define(env, "sqrt",   v_native(b_sqrt));
+    env_define(env, "cbrt",   v_native(b_cbrt));
+    env_define(env, "exp",    v_native(b_exp));
+    env_define(env, "log",    v_native(b_log));
+    env_define(env, "log2",   v_native(b_log2));
+    env_define(env, "log10",  v_native(b_log10));
+    env_define(env, "pow",    v_native(b_pow));
+    /* rounding / sign */
+    env_define(env, "round",  v_native(b_round));
+    env_define(env, "trunc",  v_native(b_trunc));
+    env_define(env, "sign",   v_native(b_sign));
+    env_define(env, "mod",    v_native(b_mod));
+    /* constants */
+    env_define(env, "pi",     v_num(3.14159265358979323846));
+    env_define(env, "e",      v_num(2.71828182845904523536));
     /* file */
     env_define(env, "read",      v_native(b_read));
+    env_define(env, "read-lines", v_native(b_read_lines));
     env_define(env, "write",     v_native(b_write));
     env_define(env, "append",    v_native(b_append));
     env_define(env, "delete",    v_native(b_delete));
@@ -3282,6 +3818,9 @@ static void install_builtins(Env* env) {
     env_define(env, "encrypt",       v_native(b_encrypt));
     env_define(env, "decrypt",       v_native(b_decrypt));
     env_define(env, "uuid",          v_native(b_uuid));
+    env_define(env, "md5",           v_native(b_md5));
+    env_define(env, "sha256",        v_native(b_sha256));
+    env_define(env, "sha512",        v_native(b_sha512));
     /* URL handling */
     env_define(env, "url:encode",    v_native(b_url_encode));
     env_define(env, "url:decode",    v_native(b_url_decode));

@@ -20,6 +20,8 @@
  *   (img:resize  src dst w h)                   — write a resized copy
  *   (img:crop    src dst x y w h)               — write a rectangular crop
  *   (img:rotate  src dst degrees)               — rotate clockwise (any angle)
+ *   (img:compose base overlay dst x y)          — paste overlay onto base at (x,y)
+ *   (img:replace-color src dst from to [fuzz])  — recolor pixels matching `from`
  *   (img:circle  src dst cx cy r fill [stroke] [stroke-width])
  *                                               — draw a circle
  *   (img:rect    src dst x y w h fill [stroke] [stroke-width])
@@ -203,6 +205,53 @@ static Value* b_img_crop(int argc, Value** argv, Env* e) {
              "\"%s\" -crop \"%ldx%ld+%ld+%ld\" +repage \"%s\"",
              src, w, h, x, y, dst);
     free(z_img_run("img:crop", tail));
+    return v_str(dst);
+}
+
+/* (img:compose base overlay dst x y)
+ * Pastes `overlay` onto `base` with its top-left corner at (x, y) and writes
+ * the result to `dst`. Honors overlay alpha (transparent PNGs blend cleanly).
+ * Negative coords are allowed; ImageMagick clips at the canvas edges. */
+static Value* b_img_compose(int argc, Value** argv, Env* e) {
+    (void)e;
+    EXPECT_ARGC("img:compose", 5);
+    const char* base    = str_arg(argv[0], "img:compose");
+    const char* overlay = str_arg(argv[1], "img:compose");
+    const char* dst     = str_arg(argv[2], "img:compose");
+    long x = (long)num_arg(argv[3], "img:compose");
+    long y = (long)num_arg(argv[4], "img:compose");
+    /* ImageMagick wants the sign baked into the geometry string. */
+    char xs[24], ys[24];
+    snprintf(xs, sizeof(xs), "%+ld", x);
+    snprintf(ys, sizeof(ys), "%+ld", y);
+    char tail[4096];
+    snprintf(tail, sizeof(tail),
+             "\"%s\" \"%s\" -geometry \"%s%s\" -composite \"%s\"",
+             base, overlay, xs, ys, dst);
+    free(z_img_run("img:compose", tail));
+    return v_str(dst);
+}
+
+/* (img:replace-color src dst from to [fuzz])
+ * Replace every pixel matching `from` with `to`. `fuzz` is a percent tolerance
+ * (0–100, default 0) — useful for JPEGs and anti-aliased edges where the
+ * target color isn't pixel-exact. Colors are any ImageMagick color spec. */
+static Value* b_img_replace_color(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 4 || argc > 5)
+        z_raise("img:replace-color: expected (img:replace-color src dst from to [fuzz])");
+    const char* src  = str_arg(argv[0], "img:replace-color");
+    const char* dst  = str_arg(argv[1], "img:replace-color");
+    const char* from = str_arg(argv[2], "img:replace-color");
+    const char* to   = str_arg(argv[3], "img:replace-color");
+    double fuzz = argc >= 5 ? num_arg(argv[4], "img:replace-color") : 0.0;
+    if (fuzz < 0)   fuzz = 0;
+    if (fuzz > 100) fuzz = 100;
+    char tail[4096];
+    snprintf(tail, sizeof(tail),
+             "\"%s\" -alpha set -fuzz \"%g%%\" -fill \"%s\" -opaque \"%s\" \"%s\"",
+             src, fuzz, to, from, dst);
+    free(z_img_run("img:replace-color", tail));
     return v_str(dst);
 }
 
@@ -451,6 +500,8 @@ static void install_image_builtins(Env* env) {
     env_define(env, "img:resize",    v_native(b_img_resize));
     env_define(env, "img:crop",      v_native(b_img_crop));
     env_define(env, "img:rotate",    v_native(b_img_rotate));
+    env_define(env, "img:compose",   v_native(b_img_compose));
+    env_define(env, "img:replace-color", v_native(b_img_replace_color));
     env_define(env, "img:circle",    v_native(b_img_circle));
     env_define(env, "img:rect",      v_native(b_img_rect));
     env_define(env, "img:add-text",  v_native(b_img_add_text));

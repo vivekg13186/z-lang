@@ -1,0 +1,67 @@
+{
+  "Named function": {
+    "prefix": "fn",
+    "body": ["(fn ${1:name} (${2:args})", "  ${0:body})"],
+    "description": "Named function definition"
+  },
+  "Lambda": {
+    "prefix": "lambda",
+    "body": ["(lambda (${1:args}) ${0:body})"],
+    "description": "Anonymous function"
+  },
+  "if/else": {
+    "prefix": "if",
+    "body": ["(if ${1:cond}", "    ${2:then}", "    ${0:else})"],
+    "description": "if/else expression"
+  },
+  "while loop": {
+    "prefix": "while",
+    "body": ["(while ${1:cond}", "  ${0:body})"],
+    "description": "while loop"
+  },
+  "for loop": {
+    "prefix": "for",
+    "body": ["(for (${1:i} ${2:start} ${3:end})", "  ${0:body})"],
+    "description": "for loop"
+  },
+  "try/catch": {
+    "prefix": "try",
+    "body": [
+      "(try",
+      "  ${1:body}",
+      "  (catch ${2:err}",
+      "    ${0:handler}))"
+    ],
+    "description": "try with catch"
+  },
+  "let binding": {
+    "prefix": "let",
+    "body": ["(let ((${1:name} ${2:value}))", "  ${0:body})"],
+    "description": "let binding"
+  },
+  "set": {
+    "prefix": "set",
+    "body": ["(set ${1:name} ${0:value})"],
+    "description": "Variable assignment"
+  },
+  "print": {
+    "prefix": "print",
+    "body": ["(print ${0:value})"],
+    "description": "Print to stdout"
+  },
+  "map": {
+    "prefix": "map",
+    "body": ["(map (lambda (${1:x}) ${2:expr}) ${0:array})"],
+    "description": "Map over an array"
+  },
+  "filter": {
+    "prefix": "filter",
+    "body": ["(filter (lambda (${1:x}) ${2:pred}) ${0:array})"],
+    "description": "Filter an array"
+  },
+  "reduce": {
+    "prefix": "reduce",
+    "body": ["(reduce (lambda (${1:acc} ${2:x}) ${3:expr}) ${4:array} ${0:init})"],
+    "description": "Reduce an array"
+  }
+}

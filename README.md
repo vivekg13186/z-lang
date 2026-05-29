@@ -166,15 +166,15 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **Arithmetic:** `+ - * / %` (and `+` doubles as string concatenation when the first arg is a string)
 - **Comparison:** `< > <= >= == !=`
 - **Logic:** `&&` `||` `!` (also as `and` / `or`)
-- **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `map`, `filter`, `reduce`
+- **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `reverse`, `sort`, `chunk`, `map`, `filter`, `reduce`
 - **Objects:** `object`, `get`, `put`, `keys`, `values`, `entries`
-- **Strings:** `concat`, `split`, `trim`, `lower`, `upper`, `replace`, `substring`, `starts-with`, `ends-with`, `contains`, `index-of`
+- **Strings:** `concat`, `split`, `join`, `trim`, `lower`, `upper`, `replace`, `substring`, `between`, `levenshtein`, `reverse`, `starts-with`, `ends-with`, `contains`, `index-of`
 - **Template strings:** any `"..."` literal can embed `${expr}` — full z expressions evaluated in scope. Use `\$` for a literal `$`.
 - **Regex:** `regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split` — supports `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S`
-- **Math:** `min`, `max`, `floor`, `ceil`, `abs`, `random`
-- **I/O:** `print`, `read`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
+- **Math:** `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `abs`, `sign`, `mod`, `sqrt`, `cbrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `random`; constants `pi`, `e`
+- **I/O:** `print`, `read`, `read-lines`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
 - **JSON:** `json:parse`, `json:stringify`
-- **Encoding / crypto:** `base64:encode`, `base64:decode`, `encrypt`, `decrypt` (lightweight XTEA-CTR), `uuid` (v4)
+- **Encoding / crypto:** `base64:encode`, `base64:decode`, `encrypt`, `decrypt` (lightweight XTEA-CTR), `uuid` (v4), `md5`, `sha256`, `sha512`
 - **URL:** `url:encode`, `url:decode`, `url:build` (object → query string)
 - **Archives:** `zip:create`, `zip:extract` (need `zip`/`unzip`), `tar:create`, `tar:extract` (`gz`/`bz2`/`xz` compression)
 - **Parsing / input:** `scanf` — `%d %f %s %c` and literal text → array of values; reads stdin when called with just a format. `input [prompt]` reads a line from stdin.
@@ -265,7 +265,7 @@ stays lean. Pass the flag at build time to opt in.
 
 ### Image manipulation — `IMAGE=1`
 
-Builtins: `img:create`, `img:resize`, `img:crop`, `img:rotate`, `img:circle`, `img:rect`, `img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`, `img:qr`, `img:barcode`, `img:info`.
+Builtins: `img:create`, `img:resize`, `img:crop`, `img:rotate`, `img:compose`, `img:replace-color`, `img:circle`, `img:rect`, `img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`, `img:qr`, `img:barcode`, `img:info`.
 
 `img:qr` and `img:barcode` use extra tools instead of ImageMagick:
 `qrencode` for QR (`brew install qrencode` / `apt-get install qrencode`) and

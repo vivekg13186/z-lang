@@ -1,0 +1,76 @@
+{
+  "name": "z-language",
+  "displayName": "z language",
+  "description": "Syntax highlighting and run support for the z language (mini Lisp-flavoured interpreter).",
+  "version": "0.0.4",
+  "publisher": "z-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vivekg13186/z-lang"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Programming Languages", "Snippets"],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:z"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "z",
+        "aliases": ["z", "z-lang"],
+        "extensions": [".z"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "z",
+        "scopeName": "source.z",
+        "path": "./syntaxes/z.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "z",
+        "path": "./snippets/z.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "z.run",
+        "title": "z: Run current file"
+      },
+      {
+        "command": "z.runZide",
+        "title": "z: Run current file in zide"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "z.run",
+        "key": "ctrl+f5",
+        "mac": "cmd+f5",
+        "when": "editorTextFocus && editorLangId == 'z'"
+      }
+    ],
+    "configuration": {
+      "title": "z language",
+      "properties": {
+        "z.binaryPath": {
+          "type": "string",
+          "default": "z",
+          "description": "Path to the `z` interpreter binary."
+        },
+        "z.zideBinaryPath": {
+          "type": "string",
+          "default": "zide",
+          "description": "Path to the `zide` REPL binary."
+        }
+      }
+    }
+  }
+}

@@ -62,6 +62,9 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `keys` | `(keys (object "a" 1))` |
 | `values` | `(values (object "a" 1))` |
 | `entries` | `(entries (object "a" 1))` |
+| `reverse` | `(reverse (array 1 2 3))` → `[3, 2, 1]`; also reverses strings |
+| `sort` | `(sort (array 3 1 2))` → `[1, 2, 3]`; pass `(fn x y)` cmp for custom order |
+| `chunk` | `(chunk (array 1 2 3 4 5) 2)` → `[[1, 2], [3, 4], [5]]` |
 | `map` | `(map (lambda (x) (* x x)) (array 1 2 3))` |
 | `filter` | `(filter (lambda (x) (> x 2)) (array 1 2 3))` |
 | `reduce` | `(reduce (lambda (a b) (+ a b)) (array 1 2 3) 0)` |
@@ -72,11 +75,15 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | --- | --- |
 | `concat` | `(concat "foo" "bar")` |
 | `split` | `(split "," "a,b,c")` |
+| `join` | `(join ", " (array 1 2 3))` → `"1, 2, 3"` |
 | `trim` | `(trim "  hi  ")` |
 | `lower` | `(lower "ABC")` |
 | `upper` | `(upper "abc")` |
 | `replace` | `(replace "hello" "l" "L")` |
 | `substring` | `(substring "hello" 0 3)` |
+| `between` | `(between "<a>hi</a>" "<a>" "</a>")` → `"hi"` |
+| `reverse` | `(reverse "hello")` → `"olleh"` (also reverses arrays) |
+| `levenshtein` | `(levenshtein "kitten" "sitting")` → `3` |
 | `starts-with` | `(starts-with "hello" "he")` |
 | `ends-with` | `(ends-with "hello" "lo")` |
 | `contains` | `(contains "hello" "ell")` |
@@ -102,6 +109,14 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `floor` | `(floor 3.7)` |
 | `ceil` | `(ceil 3.2)` |
 | `abs` | `(abs -5)` |
+| `round` / `trunc` | `(round 3.5)` → `4` · `(trunc -3.7)` → `-3` |
+| `sign` / `mod` | `(sign -3)` → `-1` · `(mod 10 3)` → `1` |
+| `sqrt` / `cbrt` / `pow` | `(sqrt 2)` · `(pow 2 10)` → `1024` |
+| `exp` / `log` / `log2` / `log10` | `(log 2.71828)` ≈ `1` |
+| `sin` / `cos` / `tan` | radians: `(sin (/ pi 2))` → `1` |
+| `asin` / `acos` / `atan` / `atan2` | `(atan2 1 1)` ≈ `pi/4` |
+| `sinh` / `cosh` / `tanh` | `(tanh 0)` → `0` |
+| `pi` / `e` | constants — `pi` ≈ `3.14159` |
 | `random` | `(random)` |
 
 ## Core
@@ -119,6 +134,7 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | Command | Example |
 | --- | --- |
 | `read` | `(read "data.txt")` |
+| `read-lines` | `(read-lines "data.txt")` → array of lines |
 | `write` | `(write "out.txt" "content")` |
 | `append` | `(append "log.txt" "a line")` |
 | `delete` | `(delete "tmp.txt")` |
@@ -143,6 +159,9 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `encrypt` | `(encrypt "key" "secret")` |
 | `decrypt` | `(decrypt "key" cipher)` |
 | `uuid` | `(uuid)` |
+| `md5` | `(md5 "abc")` → `"900150983cd24fb0d6963f7d28e17f72"` |
+| `sha256` | `(sha256 "abc")` |
+| `sha512` | `(sha512 "abc")` |
 
 ## URL
 
@@ -201,6 +220,8 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `img:resize` | `(img:resize "in.png" "out.png" 200 200)` |
 | `img:crop` | `(img:crop "in.png" "out.png" 0 0 100 100)` |
 | `img:rotate` | `(img:rotate "in.png" "out.png" 90)` |
+| `img:compose` | `(img:compose "bg.png" "logo.png" "out.png" 20 30)` |
+| `img:replace-color` | `(img:replace-color "in.png" "out.png" "red" "blue" 10)` |
 | `img:circle` | `(img:circle "c.png" "c.png" 100 100 50 "red")` |
 | `img:rect` | `(img:rect "c.png" "c.png" 10 10 80 40 "blue")` |
 | `img:add-text` | `(img:add-text "in.png" "out.png" "hi" 10 30 24 "white")` |

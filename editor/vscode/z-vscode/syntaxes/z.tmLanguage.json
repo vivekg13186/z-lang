@@ -1,0 +1,94 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "z",
+  "scopeName": "source.z",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#constant" },
+    { "include": "#fn-define" },
+    { "include": "#special-form" },
+    { "include": "#builtin" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.z",
+          "match": ";.*$",
+          "captures": {
+            "0": { "patterns": [{ "include": "#todo" }] }
+          }
+        }
+      ]
+    },
+    "todo": {
+      "patterns": [
+        {
+          "name": "keyword.other.todo.z",
+          "match": "\\b(TODO|FIXME|XXX|NOTE)\\b"
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.z",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.z",
+          "match": "\\\\."
+        },
+        {
+          "name": "meta.embedded.expression.z",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.z" } },
+          "endCaptures":   { "0": { "name": "punctuation.section.embedded.end.z" } },
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.z",
+          "match": "\\b-?0x[0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.z",
+          "match": "\\b-?\\d+(\\.\\d+)?([eE][-+]?\\d+)?\\b"
+        }
+      ]
+    },
+    "constant": {
+      "patterns": [
+        { "name": "constant.language.boolean.z", "match": "\\b(true|false)\\b" },
+        { "name": "constant.language.null.z", "match": "\\b(null|nil)\\b" },
+        { "name": "constant.language.math.z", "match": "\\b(pi|e)\\b" }
+      ]
+    },
+    "fn-define": {
+      "match": "(\\()\\s*(fn)\\s+([A-Za-z!?*/<>=][A-Za-z0-9!?*\\-+/<>=:]*)",
+      "captures": {
+        "1": { "name": "punctuation.section.parens.begin.z" },
+        "2": { "name": "storage.type.function.z" },
+        "3": { "name": "entity.name.function.z" }
+      }
+    },
+    "special-form": {
+      "name": "keyword.control.z",
+      "match": "(?<=\\(|\\s)(do|if|while|for|fn|lambda|let|set|try|quote|and|or|define|cond|when|unless|&&|\\|\\|)(?=\\s|\\))"
+    },
+    "builtin": {
+      "name": "support.function.builtin.z",
+      "match": "(?<=\\(|\\s)(print|read|read-lines|write|append|delete|input|scanf|exec|exit|run|import|help|argv|env|list-dir|file-info|copy-file|move-file|assert|sleep|type|now|timestamp|format-date|length|get|put|push|pop|keys|values|entries|array|object|contains|index-of|concat|split|join|trim|lower|upper|replace|substring|between|levenshtein|reverse|starts-with|ends-with|map|filter|reduce|sort|chunk|min|max|floor|ceil|round|trunc|abs|sign|mod|sqrt|cbrt|pow|exp|log|log2|log10|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|random|regex:test|regex:match|regex:find-all|regex:replace|regex:split|base64:encode|base64:decode|encrypt|decrypt|uuid|md5|sha256|sha512|url:encode|url:decode|url:build|json:parse|json:stringify|http:get|http:post|zip:create|zip:extract|tar:create|tar:extract|img:create|img:resize|img:crop|img:rotate|img:compose|img:replace-color|img:circle|img:rect|img:add-text|img:bw|img:grayscale|img:to-pdf|img:qr|img:barcode|img:info)(?=\\s|\\))"
+    },
+    "operator": {
+      "name": "keyword.operator.z",
+      "match": "(?<=\\()\\s*(==|!=|<=|>=|[-+*/%<>!])(?=\\s|\\))"
+    }
+  }
+}
