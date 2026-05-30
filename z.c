@@ -3479,6 +3479,10 @@ static Value* b_import(int argc, Value** argv, Env* e) {
 #include "z_img.h"
 #endif
 
+#ifdef Z_WITH_VISION
+#include "z_vision.h"
+#endif
+
 /* ============================================================
  * (help) — cheat sheet printer
  * ============================================================ */
@@ -3640,6 +3644,12 @@ static const HelpTopic g_help_topics[] = {
       "  (exit [code])\n"
       "  (import \"file.z\")         load and evaluate another file\n"
     },
+    { "vision", "computer vision (optional — build with VISION=1)",
+      "  (vision:barcode path)     → array of { type, data }   needs zbarimg\n"
+      "  (vision:faces   path)     → array of { x, y, width, height }   needs opencv-python\n"
+      "  (vision:objects path)     → array of { class, confidence, x, y, w, h }   needs opencv-python\n"
+      "  (vision:plate   path)     → array of { plate, confidence }   needs openalpr\n"
+    },
     { "image", "images (optional — build with IMAGE=1)",
       "  (img:create dst w h [color])\n"
       "  (img:info path)           → { width, height, format }\n"
@@ -3668,16 +3678,21 @@ static void help_print_topic(const HelpTopic* t) {
 static Value* b_help(int argc, Value** argv, Env* env) {
     help_set_colors();
     /* Only show the image section if it was actually compiled in. */
-    int has_image = env_lookup(env, "img:create") != NULL;
+    int has_image  = env_lookup(env, "img:create")     != NULL;
+    int has_vision = env_lookup(env, "vision:barcode") != NULL;
 
     if (argc == 0) {
         printf("%sz language cheat sheet%s\n", HBOLD, HRST);
         printf("%s(help \"topic\") for one section · "
                "topics: forms arith cmp logic arrays strings regex math core "
-               "file json crypto url archive http system%s%s\n\n",
-               HDIM, has_image ? " image" : "", HRST);
+               "file json crypto url archive http system%s%s%s\n\n",
+               HDIM,
+               has_image  ? " image"  : "",
+               has_vision ? " vision" : "",
+               HRST);
         for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
-            if (strcmp(g_help_topics[i].key, "image") == 0 && !has_image) continue;
+            if (strcmp(g_help_topics[i].key, "image")  == 0 && !has_image)  continue;
+            if (strcmp(g_help_topics[i].key, "vision") == 0 && !has_vision) continue;
             help_print_topic(&g_help_topics[i]);
         }
         return v_null();
@@ -3689,6 +3704,10 @@ static Value* b_help(int argc, Value** argv, Env* env) {
             if (strcmp(g_help_topics[i].key, want) == 0) {
                 if (strcmp(want, "image") == 0 && !has_image) {
                     printf("image module not compiled in — rebuild with IMAGE=1\n");
+                    return v_null();
+                }
+                if (strcmp(want, "vision") == 0 && !has_vision) {
+                    printf("vision module not compiled in — rebuild with VISION=1\n");
                     return v_null();
                 }
                 help_print_topic(&g_help_topics[i]);
@@ -3854,6 +3873,9 @@ static void install_builtins(Env* env) {
     /* Optional modules — only present if compiled in. */
 #ifdef Z_WITH_IMAGE
     install_image_builtins(env);
+#endif
+#ifdef Z_WITH_VISION
+    install_vision_builtins(env);
 #endif
 }
 

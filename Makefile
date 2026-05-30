@@ -63,6 +63,12 @@ ifeq ($(IMAGE),1)
     CFLAGS += -DZ_WITH_IMAGE
 endif
 
+# Enable with `make VISION=1`. Shells out to zbarimg / opencv-python / alpr.
+VISION ?= 0
+ifeq ($(VISION),1)
+    CFLAGS += -DZ_WITH_VISION
+endif
+
 .PHONY: all clean install test run info zide release deb
 
 # Override on the command line:  make release VERSION=0.2.0
@@ -80,8 +86,9 @@ info:
 	@echo "CC:       $(CC)"
 	@echo "CFLAGS:   $(CFLAGS)"
 	@echo "IMAGE:    $(IMAGE)"
+	@echo "VISION:   $(VISION)"
 
-$(BIN): $(SRC) z_img.h
+$(BIN): $(SRC) z_img.h z_vision.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
@@ -92,7 +99,7 @@ else
 	@ln -sf $(BIN) z
 endif
 
-$(IDE_BIN): zide.c $(SRC) z_img.h
+$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)

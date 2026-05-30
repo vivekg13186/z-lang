@@ -230,3 +230,22 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `img:to-pdf` | `(img:to-pdf (array "a.png" "b.png") "out.pdf")` |
 | `img:qr` | `(img:qr "https://example.com" "qr.png" 6)` |
 | `img:barcode` | `(img:barcode "012345678905" "code.png" "ean13")` |
+
+## Vision (optional — build with `VISION=1`)
+
+Each function returns an array of detections. Empty array = no detections, not an error.
+
+| Command | Example | Needs |
+| --- | --- | --- |
+| `vision:barcode` | `(vision:barcode "receipt.png")` → `[{type, data}]` | `zbarimg` |
+| `vision:faces` | `(vision:faces "group.jpg")` → `[{x, y, width, height}]` | `python3` + `opencv-python` |
+| `vision:objects` | `(vision:objects "street.jpg")` → `[{class, confidence, x, y, width, height}]` | `python3` + `opencv-python` |
+| `vision:plate` | `(vision:plate "car.jpg")` → `[{plate, confidence}]` | `alpr` (OpenALPR) |
+
+## CLI flags
+
+| Flag | Example | What it does |
+| --- | --- | --- |
+| `--version` / `-v` | `z --version` | Print version (e.g. `z 0.0.4`) |
+| _(no args)_ | `z` | Start REPL (`z` plain) or syntax-coloured REPL (`zide`) |
+| _(file path)_ | `z program.z` | Execute the script |

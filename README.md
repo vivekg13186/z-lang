@@ -92,6 +92,19 @@ cmake --build build
 ```
 z                # start an interactive REPL
 z program.z      # run a source file
+z --version      # print the version (e.g. `z 0.0.4`); -v also works
+zide             # start the enhanced REPL
+zide program.z   # zide also runs files
+zide --version   # same flag on the enhanced REPL
+```
+
+The REPL banner shows the version on start:
+
+```
+$ z
+z 0.0.4 — REPL.
+  type `help` for a cheat sheet · arrows: history / cursor · Ctrl-D: exit · Ctrl-C: cancel
+z>
 ```
 
 `make` builds two binaries: `z` (the interpreter + basic REPL) and `zide`
@@ -312,6 +325,52 @@ Colours are anything ImageMagick accepts — named (`"red"`), hex (`"#ff8800"`),
 
 If you call any `img:*` function without `IMAGE=1` set, you'll get a clean
 "undefined variable" error — the module simply isn't registered.
+
+### Computer vision — `VISION=1`
+
+A small set of detection builtins for working with photos. Like the image
+module it shells out to existing tools, so the build itself stays a single C
+file. Each function probes for what it needs and reports a useful error if
+the tool is missing.
+
+Builtins: `vision:barcode`, `vision:faces`, `vision:objects`, `vision:plate`.
+
+```
+make VISION=1
+# combine with image:
+make IMAGE=1 VISION=1
+```
+
+Runtime requirements (only the tool you actually call):
+
+| Function          | Tool             | Install |
+| ----------------- | ---------------- | ------- |
+| `vision:barcode`  | `zbarimg`        | `apt-get install zbar-tools` · `brew install zbar` |
+| `vision:faces`    | `python3` + `opencv-python` | `pip install opencv-python` |
+| `vision:objects`  | `python3` + `opencv-python` | (same) |
+| `vision:plate`    | `alpr` (OpenALPR) | `apt-get install openalpr` · `brew install openalpr` |
+
+Each function returns an **array** of detections — an empty array means "no
+detections", not an error.
+
+```lisp
+(vision:barcode "receipt.png")
+; → [ { "type": "QR-Code", "data": "https://example.com" } ]
+
+(vision:faces   "group.jpg")
+; → [ { "x": 120, "y": 60, "width": 80, "height": 80 } ]
+
+(vision:objects "street.jpg")
+; → [ { "class": "person", "confidence": 0.87,
+;       "x": 100, "y": 200, "width": 64, "height": 128 } ]
+
+(vision:plate   "car.jpg")
+; → [ { "plate": "ABC1234", "confidence": 89.2 } ]
+```
+
+Object detection currently uses OpenCV's bundled HOG people-detector — no
+model download required, but it only finds people. For richer detection
+(`person`, `car`, `dog`, ...), drop in a YOLO/DNN call in `z_vision.h`.
 
 ## Portability notes
 

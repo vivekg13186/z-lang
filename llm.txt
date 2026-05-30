@@ -1,0 +1,417 @@
+# z — LLM reference
+
+A compact, self-contained reference for the **z** language. Designed to be
+ingested by a language model so it can read and write valid z code without
+needing the full repo. Convention used here is markdown; the canonical
+filename for this style of doc is `llms.txt`, but the user asked for
+`llm.txt`, so it lives here as `llm.txt`.
+
+If you are an LLM: this file is the source of truth for what z does. The
+README has more prose, but everything you need to write working code is here.
+
+---
+
+## 1. What z is
+
+- A tiny Lisp-flavoured scripting language with a single tree-walking
+  interpreter in C99 (`z.c`, ~4k lines). No deps beyond libc.
+- Two binaries: `z` (basic REPL + file runner) and `zide` (enhanced REPL).
+- Source files use `.z`. Line comments start with `;`.
+- Values: **number** (IEEE-754 double), **string**, **boolean**, **null**,
+  **array**, **object** (string-keyed map), **function** (user or native).
+- Evaluation: prefix s-expressions. `(+ 1 2)` is `3`. Square brackets
+  `[ ... ]` parse the same as `( ... )` — they're interchangeable.
+
+```
+(print "hello")
+(+ 1 2 3)              ; 6
+(* 2 3)                ; 6
+[+ 1 2]                ; 3 — square brackets work too
+```
+
+---
+
+## 2. Syntax basics
+
+### Literals
+
+```
+42        3.14     -7      0x1f
+"hello"   "with ${expr} interpolation"   "\n \t \\ \""
+true      false    null
+(array 1 2 3)
+(object "name" "ada" "age" 36)
+```
+
+### Comments
+
+```
+; line comment
+;; section header
+```
+
+### Identifiers
+
+Almost any character is allowed in an identifier (mirror of Lisp): letters,
+digits, `- _ ! ? * / : < > = + . %`. Names like `starts-with`, `img:create`,
+`empty?` are normal. Convention is **kebab-case** with **colon namespaces**
+for modules (`json:parse`, `regex:test`, `img:resize`, `vision:faces`).
+
+### Variable lookup
+
+A bare symbol evaluates to its value. Dotted access reads object fields:
+
+```
+(set user (object "name" "ada" "age" 36))
+user.name        ; "ada"
+(get user "age") ; 36 — equivalent
+```
+
+### Template strings
+
+Any `"..."` literal can embed `${expr}`. The expression is evaluated in the
+current scope. Use `\$` for a literal `$`.
+
+```
+(set x 5)
+(print "x squared is ${(* x x)}")   ; "x squared is 25"
+```
+
+---
+
+## 3. Special forms
+
+These are evaluated specially — their arguments are **not** evaluated
+left-to-right like a normal call. The head must be a literal symbol.
+
+| Form | Shape | Notes |
+| --- | --- | --- |
+| `do`     | `(do expr...)` | Sequence; returns the last expression's value. |
+| `if`     | `(if cond then else)` | `else` is optional; missing = `null`. |
+| `while`  | `(while cond body...)` | Returns the last body value, or `null`. |
+| `for`    | `(for var coll body...)` | `var` is **a bare symbol**, not a list. Iterates arrays and object keys. |
+| `fn`     | `(fn name (params...) body...)` | Defines a named function in the current scope. |
+| `lambda` | `(lambda (params...) body...)` | Anonymous function; returns the function value. |
+| `set`    | `(set name value)` | Assigns. Supports dotted path: `(set user.age 37)`. |
+| `try`    | `(try body (catch errname handler...))` | Catches z errors raised by builtins or `assert`. |
+| `quote`  | `(quote expr)` | Returns `expr` unevaluated. |
+| `and` / `&&` | `(and a b ...)` | Short-circuit; returns last truthy or `false`. |
+| `or` / `\|\|`  | `(or a b ...)`  | Short-circuit; returns first truthy or last value. |
+
+**Important:** `for` uses a **bare symbol** as the variable. There is no
+`let` / `cond` / `when` / `unless` form — use `(set name value)` for bindings
+and nested `if` for branching.
+
+```
+(for x (array 1 2 3)
+  (print x))
+
+(for k user                     ; object → iterates keys
+  (print "${k} = ${(get user k)}"))
+
+(try
+  (/ 1 0)
+  (catch err
+    (print "caught: ${err}")))
+```
+
+---
+
+## 4. Operators and equality
+
+Arithmetic: `+ - * / %`. `+` doubles as **string concatenation** when the
+first argument is a string: `(+ "x=" 5)` → `"x=5"`. Use `concat` for
+explicit join.
+
+Comparison: `< > <= >= == !=`. Works on numbers and strings (homogeneous);
+raises on mixed types.
+
+Logic: `! ` (prefix), plus the special forms `and`/`or` (also `&&`/`||`).
+Truthiness: `false`, `null`, `0`, `""`, and empty collections are falsy.
+Everything else is truthy.
+
+---
+
+## 5. Functions
+
+```
+(fn add (a b)
+  (+ a b))
+
+(add 2 3)                       ; 5
+
+(set square (lambda (x) (* x x)))
+(square 7)                      ; 49
+
+; Closures capture the defining environment.
+(fn counter ()
+  (set n 0)
+  (lambda ()
+    (set n (+ n 1))
+    n))
+
+(set c (counter))
+(c)                              ; 1
+(c)                              ; 2
+```
+
+`fn` defines in the **current scope**. There is no separate `define` /
+`def` keyword.
+
+---
+
+## 6. Builtins — by category
+
+### Arrays & objects
+`array`, `object`, `get`, `put`, `push`, `pop`, `length`, `keys`, `values`,
+`entries`, `contains`, `index-of`, `reverse`, `sort`, `chunk`, `map`,
+`filter`, `reduce`
+
+```
+(get  (array 10 20 30) 1)                   ; 20
+(get  user "name")
+(get  obj "a" 0)                            ; chain — fields then array index
+(put  arr 0 99)
+(push (array 1 2) 3)                        ; → (1 2 3)
+(pop  (array 1 2 3))                        ; → 3 (returns the popped element)
+(keys   user) (values user) (entries user)
+(contains arr 5)  (contains user "name")    ; works for strings, arrays, objects
+(reverse (array 1 2 3))                     ; → (3 2 1) ; also reverses strings
+(sort (array 3 1 2))                        ; → (1 2 3)
+(sort arr (lambda (a b) (- b a)))           ; cmp returns -/0/+
+(chunk (array 1 2 3 4 5) 2)                 ; → ((1 2) (3 4) (5))
+(map    (lambda (x) (* x x)) arr)
+(filter (lambda (x) (> x 0))  arr)
+(reduce (lambda (acc x) (+ acc x)) arr 0)
+```
+
+### Strings
+`concat`, `split`, `join`, `trim`, `lower`, `upper`, `replace`, `substring`,
+`between`, `levenshtein`, `reverse`, `starts-with`, `ends-with`, `contains`,
+`index-of`
+
+```
+(concat "foo" 42)                                  ; "foo42" — any value to string
+(split "," "a,b,c")                                ; → ("a" "b" "c")
+(join ", " (array 1 2 3))                          ; "1, 2, 3"
+(trim "  hi  ")                                    ; "hi"
+(replace "hello" "l" "L")                          ; "heLLo" — all occurrences
+(substring "hello" 0 3)                            ; "hel"
+(between "<a>hi</a>" "<a>" "</a>")                 ; "hi" — null if missing
+(levenshtein "kitten" "sitting")                   ; 3
+(starts-with "hello" "he") (ends-with "hello" "lo")
+(index-of "hello" "ll")                            ; 2; -1 if not found
+```
+
+### Regex
+`regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split`
+
+Supported syntax: `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S` — no groups,
+no alternation, no back-references.
+
+```
+(regex:test     "\d+"  "abc123")                   ; true
+(regex:match    "\d+"  "abc123")                   ; "123"
+(regex:find-all "\d+"  "1 then 22 then 333")       ; ("1" "22" "333")
+(regex:replace  "\d+"  "x1 y2"  "N")               ; "xN yN"
+(regex:split    "\s+"  "a  b   c")                 ; ("a" "b" "c")
+```
+
+### Math
+`min`, `max`, `floor`, `ceil`, `round`, `trunc`, `abs`, `sign`, `mod`,
+`sqrt`, `cbrt`, `pow`, `exp`, `log`, `log2`, `log10`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`sinh`, `cosh`, `tanh`, `random`
+
+Constants: `pi`, `e`.
+
+`min` / `max` are variadic. Trig args are in **radians**. `mod` raises on
+divide-by-zero. `random` returns a uniform double in `[0, 1)`.
+
+### Core
+`print`, `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`,
+`env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
+
+```
+(print "hi" 1 (array 2 3))     ; space-separated, trailing newline
+(type x)                       ; "number" / "string" / "array" / "object" / "function" / "null"
+(assert (> n 0) "n must be positive")
+(now)                          ; ISO-8601 string
+(timestamp)                    ; ms since epoch (number)
+(format-date (now) "%Y-%m-%d") ; strftime
+(env "HOME")
+(exec "ls -la")                ; returns stdout as string
+(run "ls" (array "-la"))       ; argv form (no shell)
+(argv)                         ; → ["z" "script.z" "user-arg1" ...]
+(import "lib.z")
+(help)            (help "strings")
+```
+
+### File I/O
+`read`, `read-lines`, `write`, `append`, `delete`, `list-dir`, `file-info`,
+`copy-file`, `move-file`
+
+```
+(read "data.txt")                              ; whole file as string
+(read-lines "data.txt")                        ; array of lines (CRLF/LF stripped)
+(write "out.txt" "content")
+(append "log.txt" "another line\n")
+(list-dir ".")                                 ; array of entry names
+(file-info "x")                                ; { exists, is-dir, is-file, size, modified }
+(copy-file "a" "b") (move-file "a" "b")
+```
+
+### JSON
+`json:parse`, `json:stringify`
+
+```
+(set o (json:parse "{\"a\":1}"))
+(json:stringify o)              ; → "{\"a\":1}"
+```
+
+### Encoding & crypto
+`base64:encode`, `base64:decode`, `encrypt`, `decrypt`, `uuid`,
+`md5`, `sha256`, `sha512`
+
+Hashes return lowercase hex digests (32 / 64 / 128 chars). `encrypt` is a
+**lightweight** XTEA-CTR + base64 — fine for obfuscation, not for security.
+
+### URL / Archives / HTTP
+- `url:encode`, `url:decode`, `url:build` (object → query string)
+- `zip:create`, `zip:extract` (need `zip` / `unzip` on PATH)
+- `tar:create`, `tar:extract` (handle `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`)
+- `http:get url [headers]`, `http:post url body [headers]` — delegates to `curl`
+
+### Parsing / input
+- `scanf "fmt" [input]` — `%d %f %s %c` and literal text → array of values.
+  Reads stdin when called with just a format.
+- `input [prompt]` — reads a line from stdin.
+
+### Image (optional — build with `IMAGE=1`)
+
+Shells out to ImageMagick (`magick` or `convert`). Builtins:
+`img:create`, `img:info`, `img:resize`, `img:crop`, `img:rotate`,
+`img:compose`, `img:replace-color`, `img:circle`, `img:rect`,
+`img:add-text`, `img:bw`, `img:grayscale`, `img:to-pdf`,
+`img:qr` (needs `qrencode` or `zint`),
+`img:barcode` (needs `zint`).
+
+### Vision (optional — build with `VISION=1`)
+
+Each function returns an **array** of detection objects. Empty = no
+detections (not an error). Shells out to existing CLI/python tools.
+
+| Builtin | Returns | Needs |
+| --- | --- | --- |
+| `(vision:barcode path)` | `[ { type, data } ]` | `zbarimg` |
+| `(vision:faces path)`   | `[ { x, y, width, height } ]` | `python3` + `opencv-python` |
+| `(vision:objects path)` | `[ { class, confidence, x, y, width, height } ]` | `python3` + `opencv-python` |
+| `(vision:plate path)`   | `[ { plate, confidence } ]` | `alpr` (OpenALPR) |
+
+---
+
+## 7. Errors
+
+z raises errors as strings. They propagate up until caught with `try`:
+
+```
+(try
+  (/ 1 0)
+  (catch err
+    (print "caught: ${err}")))   ; "caught: %: division by zero"
+```
+
+`assert` raises if the condition is falsy:
+
+```
+(assert (> n 0) "n must be positive")
+```
+
+---
+
+## 8. Common patterns
+
+```
+; sum an array
+(reduce (lambda (acc x) (+ acc x)) (array 1 2 3 4) 0)
+
+; word count
+(length (regex:split "\s+" (trim text)))
+
+; pluck a field from each object in an array
+(map (lambda (o) (get o "name")) users)
+
+; group by 3
+(chunk (array 1 2 3 4 5 6 7) 3)   ; → ((1 2 3) (4 5 6) (7))
+
+; read config as JSON
+(set cfg (json:parse (read "config.json")))
+
+; HMAC-style fingerprint
+(sha256 (concat secret ":" payload))
+
+; recursion (factorial)
+(fn fact (n)
+  (if (<= n 1) 1
+      (* n (fact (- n 1)))))
+```
+
+---
+
+## 9. Gotchas (write these down)
+
+1. **`for` takes a bare symbol**, not a list: `(for x coll body)`, not `(for (x) coll body)`.
+2. **`set` is assignment, not declaration**. Functions defined with `fn`
+   live in the current scope; `lambda` returns a function value you can `set`.
+3. **No `let` form.** Use `(set name value)` then refer to `name`.
+4. **No `cond` / `when` / `unless`.** Nest `if` or use `and`/`or`.
+5. **`+` is overloaded for strings** *only when the first argument is a
+   string.* `(+ "x=" 5)` → `"x=5"` but `(+ 5 "x")` raises. Use `concat` to
+   be safe.
+6. **`==` on different types raises**, not returns `false`. Compare types
+   explicitly with `(type v)` first if needed.
+7. **`pop`** returns the **popped element**, not the rest of the array.
+8. **Object keys are strings.** Numeric "keys" become strings:
+   `(get (object 1 "a") "1")`.
+9. **Square brackets equal parens.** `[+ 1 2]` is `(+ 1 2)`. Often used for
+   readability in `for` and `let`-style bindings.
+10. **Templates evaluate in the current scope**, so `"x=${user.name}"`
+    works the same as `(concat "x=" user.name)`.
+
+---
+
+## 10. Running
+
+```
+z                   ; REPL
+z program.z         ; run a script
+z --version         ; print version (also: -v)
+zide                ; enhanced REPL with syntax highlighting + Tab complete
+help                ; in the REPL, prints the cheat sheet
+```
+
+Optional modules are off by default — rebuild with `make IMAGE=1` or
+`make VISION=1` (or both) to include them.
+
+---
+
+## 11. Minimal cheat program
+
+A short, self-contained program touching most of the language:
+
+```
+; counts how many words in a file contain each starting letter
+(fn count-by-letter (path)
+  (set bins (object))
+  (for w (regex:split "\s+" (trim (read path)))
+    (if (> (length w) 0)
+      (do
+        (set first (lower (substring w 0 1)))
+        (set prev (get bins first))
+        (if (== (type prev) "null")
+            (set prev 0))
+        (put bins first (+ prev 1)))))
+  bins)
+
+(print (json:stringify (count-by-letter "notes.txt")))
+```
