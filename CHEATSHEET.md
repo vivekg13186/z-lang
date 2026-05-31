@@ -282,7 +282,6 @@ Each function returns an array of detections. Empty array = no detections, not a
 | `vision:barcode` | `(vision:barcode "receipt.png")` → `[{type, data}]` | `zbarimg` |
 | `vision:faces` | `(vision:faces "group.jpg")` → `[{x, y, width, height}]` | `python3` + `opencv-python` |
 | `vision:objects` | `(vision:objects "street.jpg")` → `[{class, confidence, x, y, width, height}]` | `python3` + `opencv-python` |
-| `vision:plate` | `(vision:plate "car.jpg")` → `[{plate, confidence}]` | `alpr` (OpenALPR) |
 
 ## Date math
 

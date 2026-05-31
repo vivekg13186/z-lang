@@ -77,6 +77,64 @@ ifeq ($(SQLITE),1)
     LDLIBS += -lsqlite3
 endif
 
+# Enable with `make OCR=1`. Links against libtesseract + libleptonica
+# (the tesseract C API). Replaces the python+pytesseract path.
+#   apt-get install libtesseract-dev libleptonica-dev tesseract-ocr
+#   brew install tesseract
+#
+# Header/lib discovery, in order of preference:
+#   1. pkg-config tesseract     (works on Linux + modern macOS Homebrew)
+#   2. brew --prefix tesseract  (macOS fallback if pkg-config isn't on PATH)
+#   3. plain -ltesseract -lleptonica (assumes default search path)
+OCR ?= 0
+ifeq ($(OCR),1)
+    # Start with whatever pkg-config knows for tesseract...
+    TESS_CFLAGS := $(shell pkg-config --cflags tesseract 2>/dev/null)
+    TESS_LIBS   := $(shell pkg-config --libs   tesseract 2>/dev/null)
+    # ...and union with leptonica's own .pc (sometimes called `lept`),
+    # because tesseract.pc doesn't always Require leptonica.
+    LEPT_CFLAGS := $(shell pkg-config --cflags lept 2>/dev/null)
+    ifeq ($(LEPT_CFLAGS),)
+        LEPT_CFLAGS := $(shell pkg-config --cflags leptonica 2>/dev/null)
+    endif
+    LEPT_LIBS := $(shell pkg-config --libs lept 2>/dev/null)
+    ifeq ($(LEPT_LIBS),)
+        LEPT_LIBS := $(shell pkg-config --libs leptonica 2>/dev/null)
+    endif
+    TESS_CFLAGS += $(LEPT_CFLAGS)
+    TESS_LIBS   += $(LEPT_LIBS)
+    # If pkg-config gave us nothing at all, try Homebrew prefixes.
+    ifeq ($(strip $(TESS_CFLAGS) $(TESS_LIBS)),)
+        TESS_PREFIX := $(shell brew --prefix tesseract 2>/dev/null)
+        ifneq ($(TESS_PREFIX),)
+            LEPT_PREFIX := $(shell brew --prefix leptonica 2>/dev/null)
+            TESS_CFLAGS := -I$(TESS_PREFIX)/include
+            TESS_LIBS   := -L$(TESS_PREFIX)/lib -ltesseract
+            ifneq ($(LEPT_PREFIX),)
+                TESS_CFLAGS += -I$(LEPT_PREFIX)/include
+                TESS_LIBS   += -L$(LEPT_PREFIX)/lib -lleptonica
+            else
+                TESS_LIBS   += -lleptonica
+            endif
+        else
+            TESS_LIBS := -ltesseract -lleptonica
+        endif
+    else ifeq ($(LEPT_CFLAGS),)
+        # pkg-config had tesseract but NOT leptonica. Add brew --prefix for
+        # leptonica as a belt-and-suspenders measure — that's the common
+        # Homebrew failure mode that triggered this fix.
+        LEPT_PREFIX := $(shell brew --prefix leptonica 2>/dev/null)
+        ifneq ($(LEPT_PREFIX),)
+            TESS_CFLAGS += -I$(LEPT_PREFIX)/include
+            TESS_LIBS   += -L$(LEPT_PREFIX)/lib -lleptonica
+        else
+            TESS_LIBS   += -lleptonica
+        endif
+    endif
+    CFLAGS += -DZ_WITH_OCR $(TESS_CFLAGS)
+    LDLIBS += $(TESS_LIBS)
+endif
+
 .PHONY: all clean install test run info zide release deb
 
 # Override on the command line:  make release VERSION=0.2.0
@@ -96,8 +154,9 @@ info:
 	@echo "IMAGE:    $(IMAGE)"
 	@echo "VISION:   $(VISION)"
 	@echo "SQLITE:   $(SQLITE)"
+	@echo "OCR:      $(OCR)"
 
-$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h
+$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
@@ -108,7 +167,7 @@ else
 	@ln -sf $(BIN) z
 endif
 
-$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h
+$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)

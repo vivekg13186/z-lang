@@ -14,7 +14,8 @@
  *   vision:barcode  → `zbarimg`   (apt-get install zbar-tools / brew install zbar)
  *   vision:faces    → `python3` + opencv-python  (pip install opencv-python)
  *   vision:objects  → `python3` + opencv-python  (pip install opencv-python)
- *   vision:plate    → `alpr`      (apt-get install openalpr / brew install openalpr)
+ *   vision:plate    — REMOVED. For license-plate OCR build with OCR=1 and
+ *                     combine `vision:objects` proposals with `ocr:image`.
  *
  * Return shapes:
  *
@@ -27,9 +28,6 @@
  *   (vision:objects path)
  *     → [ { "class": "person", "confidence": 0.87,
  *           "x": 100, "y": 200, "width": 64, "height": 128 }, ... ]
- *
- *   (vision:plate path)
- *     → [ { "plate": "ABC1234", "confidence": 89.2 }, ... ]
  *
  * All functions read the image path off disk; they don't load image bytes
  * across the FFI boundary. An empty array means "no detections", not an error.
@@ -243,68 +241,20 @@ static Value* b_vision_objects(int argc, Value** argv, Env* e) {
 }
 
 /* ============================================================
- * vision:plate — `alpr` from OpenALPR.
- * Default output lines:  "    - PLATE        confidence: 89.20"
- * We parse those into { plate, confidence } objects.
- * ============================================================ */
-
-static void on_plate_line(char* line, void* ctx) {
-    Value* out = (Value*)ctx;
-    /* Skip leading whitespace and the "- " prefix that alpr uses. */
-    while (*line == ' ' || *line == '\t') line++;
-    if (line[0] != '-') return;
-    line++;
-    while (*line == ' ' || *line == '\t') line++;
-    /* Format: "PLATE\t confidence: XX.YY" — find the "confidence:" anchor. */
-    char* anchor = strstr(line, "confidence:");
-    if (!anchor) return;
-    /* Plate text runs up to first whitespace before the anchor. */
-    char plate[64] = {0};
-    size_t i = 0;
-    while (line < anchor && *line && *line != ' ' && *line != '\t' && i < sizeof(plate) - 1) {
-        plate[i++] = *line++;
-    }
-    plate[i] = '\0';
-    if (i == 0) return;
-    double conf = 0;
-    sscanf(anchor, "confidence: %lf", &conf);
-    Value* o = v_object();
-    obj_set(&o->as.obj, "plate",      v_str(plate));
-    obj_set(&o->as.obj, "confidence", v_num(conf));
-    vlist_push(&out->as.list, o);
-}
-
-static Value* b_vision_plate(int argc, Value** argv, Env* e) {
-    (void)e;
-    EXPECT_ARGC("vision:plate", 1);
-    const char* path = str_arg(argv[0], "vision:plate");
-    if (!z_vision_have("alpr -v >/dev/null 2>&1"))
-        z_raise("vision:plate: needs `alpr` on PATH "
-                "(apt-get install openalpr / brew install openalpr)");
-    char cmd[8192];
-    snprintf(cmd, sizeof(cmd), "alpr -j=false \"%s\" 2>/dev/null", path);
-    int code = 0;
-    char* raw = z_capture_command(cmd, &code);
-    if (code != 0) {
-        char* msg = raw ? raw : str_dup("");
-        z_vision_trim(msg);
-        z_raise("vision:plate: alpr failed (%d): %s", code, msg);
-    }
-    Value* out = v_array();
-    z_vision_for_each_line(raw, on_plate_line, out);
-    free(raw);
-    return out;
-}
-
-/* ============================================================
  * Registration
+ *
+ * Note: `vision:plate` was removed — the openalpr backend is dead and the
+ * python+pytesseract replacement was too brittle to keep as a default
+ * (depends on user-installed pytesseract + heuristic contour finding).
+ * For OCR use the dedicated `OCR=1` module (see z_ocr.h), which embeds
+ * libtesseract directly. To build a plate pipeline on top, combine
+ * `vision:objects` (for region proposals) with `ocr:image` (per-ROI OCR).
  * ============================================================ */
 
 static void install_vision_builtins(Env* env) {
     env_define(env, "vision:barcode", v_native(b_vision_barcode));
     env_define(env, "vision:faces",   v_native(b_vision_faces));
     env_define(env, "vision:objects", v_native(b_vision_objects));
-    env_define(env, "vision:plate",   v_native(b_vision_plate));
 }
 
 #endif /* Z_WITH_VISION */

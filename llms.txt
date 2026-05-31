@@ -403,7 +403,6 @@ detections (not an error). Shells out to existing CLI/python tools.
 | `(vision:barcode path)` | `[ { type, data } ]` | `zbarimg` |
 | `(vision:faces path)`   | `[ { x, y, width, height } ]` | `python3` + `opencv-python` |
 | `(vision:objects path)` | `[ { class, confidence, x, y, width, height } ]` | `python3` + `opencv-python` |
-| `(vision:plate path)`   | `[ { plate, confidence } ]` | `alpr` (OpenALPR) |
 
 ---
 

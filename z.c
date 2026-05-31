@@ -4670,6 +4670,10 @@ static Value* b_import(int argc, Value** argv, Env* e) {
 #include "z_sqlite.h"
 #endif
 
+#ifdef Z_WITH_OCR
+#include "z_ocr.h"
+#endif
+
 /* HTML/XML query module — small + dependency-free, so always on. */
 #include "z_html.h"
 
@@ -4873,6 +4877,12 @@ static const HelpTopic g_help_topics[] = {
       "  (exit [code])\n"
       "  (import \"file.z\")         load and evaluate another file\n"
     },
+    { "ocr", "OCR (optional — build with OCR=1; links libtesseract)",
+      "  (ocr:image path [lang])    → recognized text string\n"
+      "  (ocr:words path [lang])    → array of {word, confidence, x, y, width, height}\n"
+      "  default lang = \"eng\"; chain with \"+\" (e.g. \"eng+deu\")\n"
+      "  needs `tesseract` + tessdata files; set $TESSDATA_PREFIX if non-standard.\n"
+    },
     { "sqlite", "SQLite + KV (optional — build with SQLITE=1)",
       "  (sqlite:open path)               → handle (\":memory:\" for in-RAM)\n"
       "  (sqlite:exec  db sql [params])   run; → affected row count\n"
@@ -4898,7 +4908,6 @@ static const HelpTopic g_help_topics[] = {
       "  (vision:barcode path)     → array of { type, data }   needs zbarimg\n"
       "  (vision:faces   path)     → array of { x, y, width, height }   needs opencv-python\n"
       "  (vision:objects path)     → array of { class, confidence, x, y, w, h }   needs opencv-python\n"
-      "  (vision:plate   path)     → array of { plate, confidence }   needs openalpr\n"
     },
     { "image", "images (optional — build with IMAGE=1)",
       "  (img:create dst w h [color])\n"
@@ -4931,21 +4940,24 @@ static Value* b_help(int argc, Value** argv, Env* env) {
     int has_image  = env_lookup(env, "img:create")     != NULL;
     int has_vision = env_lookup(env, "vision:barcode") != NULL;
     int has_sqlite = env_lookup(env, "sqlite:open")    != NULL;
+    int has_ocr    = env_lookup(env, "ocr:image")      != NULL;
 
     if (argc == 0) {
         printf("%sz language cheat sheet%s\n", HBOLD, HRST);
         printf("%s(help \"topic\") for one section · "
                "topics: forms arith cmp logic arrays strings regex math core "
-               "file json crypto url archive http system html%s%s%s%s\n\n",
+               "file json crypto url archive http system html%s%s%s%s%s\n\n",
                HDIM,
                has_image  ? " image"  : "",
                has_vision ? " vision" : "",
                has_sqlite ? " sqlite" : "",
+               has_ocr    ? " ocr"    : "",
                HRST);
         for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
             if (strcmp(g_help_topics[i].key, "image")  == 0 && !has_image)  continue;
             if (strcmp(g_help_topics[i].key, "vision") == 0 && !has_vision) continue;
             if (strcmp(g_help_topics[i].key, "sqlite") == 0 && !has_sqlite) continue;
+            if (strcmp(g_help_topics[i].key, "ocr")    == 0 && !has_ocr)    continue;
             help_print_topic(&g_help_topics[i]);
         }
         return v_null();
@@ -4961,6 +4973,10 @@ static Value* b_help(int argc, Value** argv, Env* env) {
                 }
                 if (strcmp(want, "sqlite") == 0 && !has_sqlite) {
                     printf("sqlite module not compiled in — rebuild with SQLITE=1\n");
+                    return v_null();
+                }
+                if (strcmp(want, "ocr") == 0 && !has_ocr) {
+                    printf("ocr module not compiled in — rebuild with OCR=1\n");
                     return v_null();
                 }
                 if (strcmp(want, "vision") == 0 && !has_vision) {
@@ -5188,6 +5204,9 @@ static void install_builtins(Env* env) {
 #endif
 #ifdef Z_WITH_SQLITE
     install_sqlite_builtins(env);
+#endif
+#ifdef Z_WITH_OCR
+    install_ocr_builtins(env);
 #endif
     install_html_builtins(env);
 }

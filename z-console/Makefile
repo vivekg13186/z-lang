@@ -32,6 +32,47 @@ ifeq ($(SQLITE),1)
     CFLAGS  += -DZ_WITH_SQLITE
     LDFLAGS += -lsqlite3
 endif
+OCR ?= 0
+ifeq ($(OCR),1)
+    TESS_CFLAGS := $(shell pkg-config --cflags tesseract 2>/dev/null)
+    TESS_LIBS   := $(shell pkg-config --libs   tesseract 2>/dev/null)
+    LEPT_CFLAGS := $(shell pkg-config --cflags lept 2>/dev/null)
+    ifeq ($(LEPT_CFLAGS),)
+        LEPT_CFLAGS := $(shell pkg-config --cflags leptonica 2>/dev/null)
+    endif
+    LEPT_LIBS := $(shell pkg-config --libs lept 2>/dev/null)
+    ifeq ($(LEPT_LIBS),)
+        LEPT_LIBS := $(shell pkg-config --libs leptonica 2>/dev/null)
+    endif
+    TESS_CFLAGS += $(LEPT_CFLAGS)
+    TESS_LIBS   += $(LEPT_LIBS)
+    ifeq ($(strip $(TESS_CFLAGS) $(TESS_LIBS)),)
+        TESS_PREFIX := $(shell brew --prefix tesseract 2>/dev/null)
+        ifneq ($(TESS_PREFIX),)
+            LEPT_PREFIX := $(shell brew --prefix leptonica 2>/dev/null)
+            TESS_CFLAGS := -I$(TESS_PREFIX)/include
+            TESS_LIBS   := -L$(TESS_PREFIX)/lib -ltesseract
+            ifneq ($(LEPT_PREFIX),)
+                TESS_CFLAGS += -I$(LEPT_PREFIX)/include
+                TESS_LIBS   += -L$(LEPT_PREFIX)/lib -lleptonica
+            else
+                TESS_LIBS   += -lleptonica
+            endif
+        else
+            TESS_LIBS := -ltesseract -lleptonica
+        endif
+    else ifeq ($(LEPT_CFLAGS),)
+        LEPT_PREFIX := $(shell brew --prefix leptonica 2>/dev/null)
+        ifneq ($(LEPT_PREFIX),)
+            TESS_CFLAGS += -I$(LEPT_PREFIX)/include
+            TESS_LIBS   += -L$(LEPT_PREFIX)/lib -lleptonica
+        else
+            TESS_LIBS   += -lleptonica
+        endif
+    endif
+    CFLAGS  += -DZ_WITH_OCR $(TESS_CFLAGS)
+    LDFLAGS += $(TESS_LIBS)
+endif
 
 # raylib via pkg-config
 RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
@@ -51,7 +92,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_html.h ../version.h
+$(TARGET): $(SRC) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_html.h ../version.h
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 clean:

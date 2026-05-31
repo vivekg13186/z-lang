@@ -368,6 +368,64 @@ Cell type ↔ z mapping is total: `NULL`/`INTEGER`/`REAL`/`TEXT`/`BLOB` ↔
 (kv:keys s "th")          ; → ["theme"]
 ```
 
+### OCR — `OCR=1`
+
+Embeds tesseract via its C API (no Python required at runtime). Adds
+`ocr:image` and `ocr:words` builtins.
+
+```sh
+make OCR=1
+```
+
+Install the dev headers + a runtime tessdata language pack:
+
+| OS              | How |
+| --------------- | --- |
+| macOS           | `brew install tesseract` |
+| Debian / Ubuntu | `sudo apt-get install libtesseract-dev libleptonica-dev tesseract-ocr` |
+| Fedora          | `sudo dnf install tesseract-devel leptonica-devel tesseract` |
+
+```lisp
+(ocr:image "doc.png")
+;  → "the recognized text\n"
+
+(ocr:image "doc.png" "eng+deu")
+;  → mixed-language
+
+(ocr:words "doc.png")
+;  → [ { "word": "Hello", "confidence": 96.4,
+;        "x": 12, "y": 30, "width": 64, "height": 22 }, ... ]
+```
+
+If you installed tessdata to a non-default path, point at it:
+
+```sh
+TESSDATA_PREFIX=/opt/homebrew/share/tessdata ./z myscript.z
+```
+
+**Header discovery**: the Makefile auto-locates both tesseract and
+leptonica. Resolution cascade:
+
+1. `pkg-config tesseract` (Linux + most Homebrew installs)
+2. `pkg-config lept` or `pkg-config leptonica` separately — sometimes
+   tesseract's `.pc` doesn't declare leptonica as a `Requires:`
+3. `brew --prefix tesseract` + `brew --prefix leptonica` (macOS fallback)
+4. Plain `-ltesseract -lleptonica` (assume default paths)
+
+`z_ocr.h` also handles two leptonica header layouts via `__has_include`:
+modern installs put it at `<leptonica/allheaders.h>`, older / unusual
+ones at `<allheaders.h>` — either works.
+
+If `make OCR=1` still fails:
+
+```sh
+brew install pkg-config        # makes step 1 work
+# or override manually:
+make OCR=1 \
+  CFLAGS+="-I$(brew --prefix tesseract)/include -I$(brew --prefix leptonica)/include" \
+  LDLIBS+="-L$(brew --prefix tesseract)/lib -L$(brew --prefix leptonica)/lib"
+```
+
 ### Computer vision — `VISION=1`
 
 A small set of detection builtins for working with photos. Like the image
@@ -375,7 +433,7 @@ module it shells out to existing tools, so the build itself stays a single C
 file. Each function probes for what it needs and reports a useful error if
 the tool is missing.
 
-Builtins: `vision:barcode`, `vision:faces`, `vision:objects`, `vision:plate`.
+Builtins: `vision:barcode`, `vision:faces`, `vision:objects`. (License-plate OCR was removed in favour of building it from `OCR=1`'s `ocr:image` plus your own region proposals.)
 
 ```
 make VISION=1
@@ -390,7 +448,6 @@ Runtime requirements (only the tool you actually call):
 | `vision:barcode`  | `zbarimg`        | `apt-get install zbar-tools` · `brew install zbar` |
 | `vision:faces`    | `python3` + `opencv-python` | `pip install opencv-python` |
 | `vision:objects`  | `python3` + `opencv-python` | (same) |
-| `vision:plate`    | `alpr` (OpenALPR) | `apt-get install openalpr` · `brew install openalpr` |
 
 Each function returns an **array** of detections — an empty array means "no
 detections", not an error.
@@ -405,9 +462,6 @@ detections", not an error.
 (vision:objects "street.jpg")
 ; → [ { "class": "person", "confidence": 0.87,
 ;       "x": 100, "y": 200, "width": 64, "height": 128 } ]
-
-(vision:plate   "car.jpg")
-; → [ { "plate": "ABC1234", "confidence": 89.2 } ]
 ```
 
 Object detection currently uses OpenCV's bundled HOG people-detector — no

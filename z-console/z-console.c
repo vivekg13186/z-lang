@@ -291,8 +291,8 @@ static const ZcTheme ZC_THEMES[] = {
         .text_fg     = (Color){230,230,230, 255},
         .err_fg      = (Color){255,100,100, 255},
         .border      = (Color){ 60, 60, 60, 255},
-        .canvas_bg   = WHITE,
-        .canvas_line = (Color){180,180,180, 255},
+        .canvas_bg   = (Color){ 0, 0, 0, 0 },   /* transparent */
+        .canvas_line = (Color){ 0, 0, 0, 0 },   /* transparent */
         .status_bg   = (Color){ 20, 22, 28, 255},
         .status_fg   = (Color){150,150,170, 255},
         .popup_bg    = (Color){ 34, 36, 46, 245},
@@ -324,8 +324,8 @@ static const ZcTheme ZC_THEMES[] = {
         .text_fg     = (Color){ 30, 30, 30, 255},
         .err_fg      = (Color){200, 40, 40, 255},
         .border      = (Color){200,200,200, 255},
-        .canvas_bg   = WHITE,
-        .canvas_line = (Color){160,160,160, 255},
+        .canvas_bg   = (Color){ 0, 0, 0, 0 },   /* transparent */
+        .canvas_line = (Color){ 0, 0, 0, 0 },   /* transparent */
         .status_bg   = (Color){240,240,236, 255},
         .status_fg   = (Color){100,100,110, 255},
         .popup_bg    = (Color){255,255,250, 245},
@@ -357,8 +357,8 @@ static const ZcTheme ZC_THEMES[] = {
         .text_fg     = (Color){255,255,255, 255},
         .err_fg      = (Color){255, 60, 60, 255},
         .border      = (Color){255,255,255, 255},
-        .canvas_bg   = WHITE,
-        .canvas_line = (Color){255,255,255, 255},
+        .canvas_bg   = (Color){ 0, 0, 0, 0 },   /* transparent */
+        .canvas_line = (Color){ 0, 0, 0, 0 },   /* transparent */
         .status_bg   = (Color){  0,  0,  0, 255},
         .status_fg   = (Color){255,255,  0, 255},
         .popup_bg    = (Color){  0,  0,  0, 255},
@@ -1116,7 +1116,8 @@ static const ZcExample Z_CONSOLE_EXAMPLES[] = {
     { "vision:barcode", "(vision:barcode \"receipt.png\")" },
     { "vision:faces", "(vision:faces \"group.jpg\")" },
     { "vision:objects", "(vision:objects \"street.jpg\")" },
-    { "vision:plate", "(vision:plate \"car.jpg\")" },
+    { "ocr:image",  "(ocr:image \"doc.png\")" },
+    { "ocr:words",  "(ocr:words \"doc.png\" \"eng\")" },
     { "sqlite:open",   "(sqlite:open \":memory:\")" },
     { "sqlite:exec",   "(sqlite:exec db \"INSERT ...\" (array v))" },
     { "sqlite:query",  "(sqlite:query db \"SELECT ...\" (array v))" },
@@ -1361,7 +1362,11 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     { "vision:barcode", "path" },
     { "vision:faces",   "path" },
     { "vision:objects", "path" },
-    { "vision:plate",   "path" },
+
+    /* OCR (optional) */
+    { "ocr:image",  "path [lang]" },
+    { "ocr:words",  "path [lang]" },
+    { "ocr:lang",   "" },
 
     /* SQLite + KV (optional) */
     { "sqlite:open",   "path" },
@@ -2178,8 +2183,11 @@ int main(int argc, char** argv) {
 
             if (c->canvas_h > 0) {
                 int cx = 24, cy = y, cw = W - 48, ch = c->canvas_h;
-                DrawRectangle(cx, cy, cw, ch, CANVAS_BG);
-                DrawRectangleLines(cx, cy, cw, ch, CANVAS_LINE);
+                /* Only fill if the theme requests a visible canvas color;
+                 * a fully-transparent CANVAS_BG lets the cell sit on the
+                 * window background. */
+                if (CANVAS_BG.a   > 0) DrawRectangle      (cx, cy, cw, ch, CANVAS_BG);
+                if (CANVAS_LINE.a > 0) DrawRectangleLines(cx, cy, cw, ch, CANVAS_LINE);
                 BeginScissorMode(cx, cy, cw, ch);
                 for (int j = 0; j < c->op_count; j++) {
                     DrawOp* op = &c->ops[j];
