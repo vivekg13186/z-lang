@@ -1,0 +1,54 @@
+; Demo for z-console — paste a section at a time and hit Enter.
+
+; --- 1. shapes ---
+(do
+    (ui:rect    0  0 600 200 "#fff8e0")
+    (ui:circle 80 80 50 "tomato")
+    (ui:circle 200 80 50 "gold")
+    (ui:circle 320 80 50 "steelblue")
+    (ui:line    0 150 600 150 "black")
+    (ui:text-at 20 165 "drawn with z" 18 "black"))
+
+; --- 2. bar chart ---
+(do
+    (set values (array 30 80 120 50 95 140 70 30))
+    (set x 20)
+    (for v values
+        (do
+            (ui:rect x (- 180 v) 50 v "steelblue")
+            (ui:text-at x 185 "${v}" 12 "black")
+            (set x (+ x 60)))))
+
+; --- 3. sine wave ---
+(do
+    (set i 0)
+    (set last-x 0)
+    (set last-y 100)
+    (while (< i 600)
+        (do
+            (set y (+ 100 (floor (* 80 (* (random) 0.4)))))
+            (set y (+ 100 (floor (* 60 (- (random) 0.5) 2))))
+            (ui:line last-x last-y i y "purple")
+            (set last-x i)
+            (set last-y y)
+            (set i (+ i 4)))))
+
+; --- 4. labelled grid ---
+(do
+    (set i 0)
+    (while (< i 8)
+        (do
+            (set j 0)
+            (while (< j 8)
+                (do
+                    (set x (* j 50))
+                    (set y (* i 30))
+                    (ui:rect (+ x 5) (+ y 5) 40 20 (if (== (% (+ i j) 2) 0) "lightgray" "#ddd"))
+                    (ui:text-at (+ x 12) (+ y 10) "${(+ (* i 8) j)}" 11 "black")
+                    (set j (+ j 1))))
+            (set i (+ i 1)))))
+
+; --- 5. text-only output ---
+(print "hello from z-console")
+(print "args:" (argv))
+(print "uuid:" (uuid))

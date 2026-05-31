@@ -1068,7 +1068,15 @@ static Value* eval_try(VList* args, Env* env) {
     }
 }
 
+/* Interrupt + tick hooks — used by GUI front-ends (z-console) to
+ * cooperatively cancel long-running evaluations. Both default to inert. */
+volatile int z_eval_interrupted = 0;
+void       (*z_eval_tick)(void) = NULL;
+static long  z_eval_tick_counter = 0;
+
 static Value* eval(Value* expr, Env* env) {
+    if (z_eval_tick && ((++z_eval_tick_counter) & 0xFFF) == 0) z_eval_tick();
+    if (z_eval_interrupted) { z_eval_interrupted = 0; z_raise("eval interrupted (Ctrl+.)"); }
     if (!expr) return v_null();
     switch (expr->type) {
         case V_NULL:
