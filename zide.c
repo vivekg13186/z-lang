@@ -41,8 +41,9 @@ static int   ZIDE_COLOR = 0;
 #define C_HINT    "\x1b[90m"
 
 static const char* ZIDE_FORMS[] = {
-    "do", "if", "while", "for", "fn", "lambda", "set", "try", "catch",
-    "and", "or", "quote", NULL
+    "do", "if", "when", "unless", "cond", "let",
+    "while", "for", "fn", "lambda", "set", "try", "catch",
+    "and", "or", "quote", "else", "->", "->>", NULL
 };
 
 static int zide_is_form(const char* tok) {

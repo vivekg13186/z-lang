@@ -37,7 +37,41 @@
   "let binding": {
     "prefix": "let",
     "body": ["(let ((${1:name} ${2:value}))", "  ${0:body})"],
-    "description": "let binding"
+    "description": "block-local bindings (let* semantics)"
+  },
+  "when": {
+    "prefix": "when",
+    "body": ["(when ${1:cond}", "  ${0:body})"],
+    "description": "one-arm if; null when false"
+  },
+  "unless": {
+    "prefix": "unless",
+    "body": ["(unless ${1:cond}", "  ${0:body})"],
+    "description": "inverse one-arm if"
+  },
+  "cond": {
+    "prefix": "cond",
+    "body": [
+      "(cond (${1:test1} ${2:result1})",
+      "      (${3:test2} ${4:result2})",
+      "      (else ${0:default}))"
+    ],
+    "description": "multi-branch conditional"
+  },
+  "thread-first": {
+    "prefix": "->",
+    "body": ["(-> ${1:initial}", "    ${0:step})"],
+    "description": "thread-first: insert acc as arg 1 of each step"
+  },
+  "thread-last": {
+    "prefix": "->>",
+    "body": ["(->> ${1:initial}", "     ${0:step})"],
+    "description": "thread-last: insert acc as final arg of each step"
+  },
+  "variadic function": {
+    "prefix": "fnrest",
+    "body": ["(fn ${1:name} (${2:a} & ${3:rest})", "  ${0:body})"],
+    "description": "variadic function with rest parameter"
   },
   "set": {
     "prefix": "set",

@@ -69,6 +69,14 @@ ifeq ($(VISION),1)
     CFLAGS += -DZ_WITH_VISION
 endif
 
+# Enable with `make SQLITE=1`. Links against libsqlite3.
+#   apt-get install libsqlite3-dev   /   brew install sqlite
+SQLITE ?= 0
+ifeq ($(SQLITE),1)
+    CFLAGS += -DZ_WITH_SQLITE
+    LDLIBS += -lsqlite3
+endif
+
 .PHONY: all clean install test run info zide release deb
 
 # Override on the command line:  make release VERSION=0.2.0
@@ -87,8 +95,9 @@ info:
 	@echo "CFLAGS:   $(CFLAGS)"
 	@echo "IMAGE:    $(IMAGE)"
 	@echo "VISION:   $(VISION)"
+	@echo "SQLITE:   $(SQLITE)"
 
-$(BIN): $(SRC) z_img.h z_vision.h
+$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
@@ -99,7 +108,7 @@ else
 	@ln -sf $(BIN) z
 endif
 
-$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h
+$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)

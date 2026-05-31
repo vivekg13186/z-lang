@@ -162,28 +162,34 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 ## What's implemented
 
 
-- **Values:** number, string, boolean, null, array, object, function
+- **Values:** number, string, **bytes** (binary-safe, may contain NUL), boolean, null, array, object, function
 - **Syntax:** s-expressions, line comments with `;`, `[ ... ]` parsed the same as `( ... )`
-- **Special forms:** `do`, `if`, `while`, `for`, `fn`, `lambda`, `set`, `try`/`catch`, `quote`, `&&` / `and`, `||` / `or`
+- **Number literals:** decimal (`42`, `3.14`, `1.5e-3`), hex (`0xff`, `0XFF`), binary (`0b1010`), all optionally signed; `_` may appear anywhere in a numeric literal as a separator (`0xdead_beef`, `1_000_000`)
+- **Special forms:** `do`, `if`, `when`, `unless`, `cond`, `let`, `->`, `->>`, `while`, `for`, `fn` (with `& rest` for variadic), `lambda`, `set`, `try`/`catch`, `quote`, `&&` / `and`, `||` / `or`
 - **Variables:** `set`, bare-symbol lookup, dotted access (`user.name`), `(get container key ...)` chain
 - **Arithmetic:** `+ - * / %` (and `+` doubles as string concatenation when the first arg is a string)
 - **Comparison:** `< > <= >= == !=`
 - **Logic:** `&&` `||` `!` (also as `and` / `or`)
-- **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `reverse`, `sort`, `chunk`, `map`, `filter`, `reduce`
-- **Objects:** `object`, `get`, `put`, `keys`, `values`, `entries`
-- **Strings:** `concat`, `split`, `join`, `trim`, `lower`, `upper`, `replace`, `substring`, `between`, `levenshtein`, `reverse`, `starts-with`, `ends-with`, `contains`, `index-of`
+- **Arrays:** `array`, `get`, `put`, `push`, `pop`, `length`, `reverse`, `sort`, `chunk`, `map`, `filter`, `reduce`, `take`, `drop`, `take-while`, `drop-while`, `distinct`, `zip`, `group-by`, `merge`
+- **Objects:** `object`, `get`, `put`, `keys`, `values`, `entries`, `merge`, `dissoc`, `select-keys`, `update`, `get-in`, `assoc-in`, `update-in`
+- **Strings:** `concat`, `split`, `join`, `trim`, `lower`, `upper`, `replace`, `substring`, `between`, `levenshtein`, `reverse`, `starts-with`, `ends-with`, `contains`, `index-of`, `format`, `pad-left`, `pad-right`, `repeat`, `count-occurrences`, `slugify`
 - **Template strings:** any `"..."` literal can embed `${expr}` — full z expressions evaluated in scope. Use `\$` for a literal `$`.
 - **Regex:** `regex:test`, `regex:match`, `regex:find-all`, `regex:replace`, `regex:split` — supports `. * + ? ^ $ [...] [^...] \d \w \s \D \W \S`
-- **Math:** `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `abs`, `sign`, `mod`, `sqrt`, `cbrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `random`; constants `pi`, `e`
-- **I/O:** `print`, `read`, `read-lines`, `write`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
+- **Math:** `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `abs`, `sign`, `mod`, `clamp`, `lerp`, `is-nan`, `is-finite`, `sqrt`, `cbrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `random`, `random-int`, `random-choice`, `shuffle`, `random-seed`; constants `pi`, `e`, `inf`, `ninf`, `nan`
+- **I/O:** `print`, `read`, `read-lines`, `read-bytes`, `write`, `write-bytes`, `append`, `delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
+- **Bytes:** `bytes`, `hex`, `unhex`, `bytes:get`, `bytes:slice`, `bytes:concat`, `string->bytes`, `bytes->string`
 - **JSON:** `json:parse`, `json:stringify`
 - **Encoding / crypto:** `base64:encode`, `base64:decode`, `encrypt`, `decrypt` (lightweight XTEA-CTR), `uuid` (v4), `md5`, `sha256`, `sha512`
 - **URL:** `url:encode`, `url:decode`, `url:build` (object → query string)
 - **Archives:** `zip:create`, `zip:extract` (need `zip`/`unzip`), `tar:create`, `tar:extract` (`gz`/`bz2`/`xz` compression)
+- **HTML / XML:** `html:query`, `html:text`, `html:attr`, `xml:query`, `xml:text`, `xml:attr` — built-in CSS-selector subset (`tag`, `.class`, `#id`, `[attr]`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant + direct-child combinators) and `/a/b/c`-style XPath
 - **Parsing / input:** `scanf` — `%d %f %s %c` and literal text → array of values; reads stdin when called with just a format. `input [prompt]` reads a line from stdin.
 - **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
-- **System:** `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
+- **Dates:** `now`, `timestamp`, `format-date`, `parse-date`, `date+`, `date-diff`
+- **CSV:** `csv:parse`, `csv:stringify` (handles quoted fields with embedded commas / quotes / CRLF)
+- **System:** `type`, `assert`, `sleep`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
 - **Errors:** `try`/`catch` with `setjmp`/`longjmp`
+- **Tail-call optimization:** calls in tail position — including self-recursion, mutual recursion through `if`/`cond`/`when`/`unless`/`let`/`do`/`and`/`or` — reuse the same C stack frame, so `(count-down 1_000_000)` and `(even? n)`/`(odd? n)` work for arbitrary depths.
 
 ## Quick taste
 
@@ -315,6 +321,52 @@ Colours are anything ImageMagick accepts — named (`"red"`), hex (`"#ff8800"`),
 
 If you call any `img:*` function without `IMAGE=1` set, you'll get a clean
 "undefined variable" error — the module simply isn't registered.
+
+### SQLite + KV — `SQLITE=1`
+
+Links against `libsqlite3` directly (unlike image/vision which shell out),
+because SQLite is small, ubiquitous, and the wire-marshalling pain of a
+CLI bridge isn't worth it.
+
+Builtins: `sqlite:open`, `sqlite:exec`, `sqlite:query`, `sqlite:close`,
+`sqlite:last-insert-id`, `kv:open`, `kv:set`, `kv:get`, `kv:del`,
+`kv:keys`.
+
+```
+make SQLITE=1
+# combine:
+make IMAGE=1 VISION=1 SQLITE=1
+```
+
+Install the dev headers:
+
+| OS      | How |
+| ------- | --- |
+| macOS   | `brew install sqlite`                                |
+| Debian / Ubuntu | `sudo apt-get install libsqlite3-dev`        |
+| Fedora  | `sudo dnf install sqlite-devel`                      |
+| Arch    | `sudo pacman -S sqlite`                              |
+| Windows | `pacman -S mingw-w64-x86_64-sqlite3` (MSYS2)         |
+
+Cell type ↔ z mapping is total: `NULL`/`INTEGER`/`REAL`/`TEXT`/`BLOB` ↔
+`null`/`number`/`number`/`string`/`bytes`. BLOBs use z's first-class
+`bytes` type, so binary columns round-trip without NUL-truncation.
+
+```lisp
+(set db (sqlite:open ":memory:"))
+(sqlite:exec  db "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INT)")
+(sqlite:exec  db "INSERT INTO users (name, age) VALUES (?, ?)"
+                 (array "Ada" 36))
+(sqlite:query db "SELECT * FROM users WHERE age > ?" (array 30))
+; → [{ "id": 1, "name": "Ada", "age": 36 }]
+(sqlite:close db)
+
+; KV wrapper — schema is created on open.
+(set s (kv:open "settings.db"))
+(kv:set s "theme" "dark")
+(kv:get s "theme")        ; → "dark"
+(kv:keys s "th")          ; → ["theme"]
+```
 
 ### Computer vision — `VISION=1`
 

@@ -80,7 +80,7 @@
     },
     "special-form": {
       "name": "keyword.control.z",
-      "match": "(?<=\\(|\\s)(do|if|while|for|fn|lambda|let|set|try|quote|and|or|define|cond|when|unless|&&|\\|\\|)(?=\\s|\\))"
+      "match": "(?<=\\(|\\s)(do|if|when|unless|cond|let|while|for|fn|lambda|set|try|catch|and|or|quote|else|->>|->|&|&&|\\|\\|)(?=\\s|\\))"
     },
     "builtin": {
       "name": "support.function.builtin.z",

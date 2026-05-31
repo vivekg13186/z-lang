@@ -17,8 +17,10 @@ README has more prose, but everything you need to write working code is here.
   interpreter in C99 (`z.c`, ~4k lines). No deps beyond libc.
 - Two binaries: `z` (basic REPL + file runner) and `zide` (enhanced REPL).
 - Source files use `.z`. Line comments start with `;`.
-- Values: **number** (IEEE-754 double), **string**, **boolean**, **null**,
-  **array**, **object** (string-keyed map), **function** (user or native).
+- Values: **number** (IEEE-754 double), **string** (NUL-terminated C string,
+  so unsafe for binary), **bytes** (length-prefixed binary-safe buffer),
+  **boolean**, **null**, **array**, **object** (string-keyed map),
+  **function** (user or native).
 - Evaluation: prefix s-expressions. `(+ 1 2)` is `3`. Square brackets
   `[ ... ]` parse the same as `( ... )` — they're interchangeable.
 
@@ -36,7 +38,10 @@ README has more prose, but everything you need to write working code is here.
 ### Literals
 
 ```
-42        3.14     -7      0x1f
+42        3.14     -7
+0xff      0XFF     -0xdead_beef         ; hex with optional sign + _ separator
+0b1010    0b1111_0000                    ; binary with optional sign + _
+1_000_000 3.141_592                      ; _ is allowed in any numeric literal
 "hello"   "with ${expr} interpolation"   "\n \t \\ \""
 true      false    null
 (array 1 2 3)
@@ -88,19 +93,23 @@ left-to-right like a normal call. The head must be a literal symbol.
 | --- | --- | --- |
 | `do`     | `(do expr...)` | Sequence; returns the last expression's value. |
 | `if`     | `(if cond then else)` | `else` is optional; missing = `null`. |
+| `when`   | `(when cond body...)` | One-arm `if`; returns last body value or `null`. |
+| `unless` | `(unless cond body...)` | Inverse one-arm `if`. |
+| `cond`   | `(cond (test1 body1...) (test2 body2...) ...)` | First truthy test wins. `else` (or `true`) in the test position always matches. No match → `null`. |
+| `let`    | `(let ((n1 v1) (n2 v2) ...) body...)` | Block-local bindings in a fresh child scope. **`let*` semantics**: each binding can reference earlier ones. Names don't leak. |
+| `->`     | `(-> initial step ...)` | Thread-first. Inserts the previous result as **arg 1** of each step. `(-> "  hi  " trim upper)` ≡ `(upper (trim "  hi  "))`. |
+| `->>`    | `(->> initial step ...)` | Thread-last. Inserts the previous result as the **final argument**. Use this for `map`/`filter`/`split`/`join`. |
 | `while`  | `(while cond body...)` | Returns the last body value, or `null`. |
 | `for`    | `(for var coll body...)` | `var` is **a bare symbol**, not a list. Iterates arrays and object keys. |
-| `fn`     | `(fn name (params...) body...)` | Defines a named function in the current scope. |
+| `fn`     | `(fn name (params... [& rest]) body...)` | Defines a named function in the current scope. `&` followed by exactly one symbol collects remaining args into an array bound to that name. |
 | `lambda` | `(lambda (params...) body...)` | Anonymous function; returns the function value. |
-| `set`    | `(set name value)` | Assigns. Supports dotted path: `(set user.age 37)`. |
+| `set`    | `(set name value)` | Assigns up the scope chain. Supports dotted path: `(set user.age 37)`. |
 | `try`    | `(try body (catch errname handler...))` | Catches z errors raised by builtins or `assert`. |
 | `quote`  | `(quote expr)` | Returns `expr` unevaluated. |
 | `and` / `&&` | `(and a b ...)` | Short-circuit; returns last truthy or `false`. |
 | `or` / `\|\|`  | `(or a b ...)`  | Short-circuit; returns first truthy or last value. |
 
-**Important:** `for` uses a **bare symbol** as the variable. There is no
-`let` / `cond` / `when` / `unless` form — use `(set name value)` for bindings
-and nested `if` for branching.
+**Important:** `for` takes a bare symbol, not a list (`(for x coll body)`).
 
 ```
 (for x (array 1 2 3)
@@ -131,6 +140,25 @@ Truthiness: `false`, `null`, `0`, `""`, and empty collections are falsy.
 Everything else is truthy.
 
 ---
+
+**Tail-call optimization** is on. Calls in tail position — the last
+expression of `do`/`when`/`unless`/`let`/`and`/`or`/a function body, the
+chosen branch of `if`, the matched clause's last expression in `cond` —
+are dispatched in place instead of recursing on the C stack. Self-recursion
+and mutual recursion through any of those forms run in constant stack
+depth:
+
+```
+(fn count-down (n)
+  (if (== n 0) "done"
+      (count-down (- n 1))))
+
+(count-down 1000000)   ; works — would blow the stack without TCO
+```
+
+Recursion in NON-tail positions (e.g. `(* n (fact (- n 1)))` — the
+multiply is the outer op) still uses the C stack as normal. Restructure
+into an accumulator-passing tail form to benefit from TCO.
 
 ## 5. Functions
 
@@ -165,7 +193,14 @@ Everything else is truthy.
 ### Arrays & objects
 `array`, `object`, `get`, `put`, `push`, `pop`, `length`, `keys`, `values`,
 `entries`, `contains`, `index-of`, `reverse`, `sort`, `chunk`, `map`,
-`filter`, `reduce`
+`filter`, `reduce`, `take`, `drop`, `take-while`, `drop-while`, `distinct`,
+`zip`, `group-by`, `merge`, `dissoc`, `select-keys`, `update`,
+`get-in`, `assoc-in`, `update-in`
+
+`merge` of objects is last-wins; `merge` of arrays is concat. `get-in`,
+`assoc-in`, `update-in` walk a path array of string keys (objects) /
+number indices (arrays). All collection operations return new values —
+inputs are not mutated.
 
 ```
 (get  (array 10 20 30) 1)                   ; 20
@@ -188,7 +223,9 @@ Everything else is truthy.
 ### Strings
 `concat`, `split`, `join`, `trim`, `lower`, `upper`, `replace`, `substring`,
 `between`, `levenshtein`, `reverse`, `starts-with`, `ends-with`, `contains`,
-`index-of`
+`index-of`,
+`format` (printf-style: `%s %d %f %.Nf %x %X %o %b %c`),
+`pad-left`, `pad-right`, `repeat`, `count-occurrences`, `slugify`
 
 ```
 (concat "foo" 42)                                  ; "foo42" — any value to string
@@ -219,18 +256,57 @@ no alternation, no back-references.
 
 ### Math
 `min`, `max`, `floor`, `ceil`, `round`, `trunc`, `abs`, `sign`, `mod`,
+`clamp`, `lerp`, `is-nan`, `is-finite`,
 `sqrt`, `cbrt`, `pow`, `exp`, `log`, `log2`, `log10`,
 `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
-`sinh`, `cosh`, `tanh`, `random`
+`sinh`, `cosh`, `tanh`,
+`random`, `random-int`, `random-choice`, `shuffle`, `random-seed`.
 
-Constants: `pi`, `e`.
+Constants: `pi`, `e`, `inf`, `ninf` (negative infinity), `nan`.
 
 `min` / `max` are variadic. Trig args are in **radians**. `mod` raises on
-divide-by-zero. `random` returns a uniform double in `[0, 1)`.
+divide-by-zero. `random` is `[0, 1)`. `random-int lo hi` is inclusive
+both ends. Set `(random-seed n)` for reproducibility.
 
 ### Core
-`print`, `type`, `assert`, `sleep`, `now`, `timestamp`, `format-date`,
-`env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
+`print`, `type`, `assert`, `sleep`, `env`, `exec`, `run`, `argv`,
+`exit`, `import`, `help`
+
+### Dates
+`now`, `timestamp`, `format-date`, `parse-date`, `date+`, `date-diff`.
+`parse-date` returns ms-since-epoch (compatible with `date+` / `date-diff`).
+`date+`/`date-diff` units: `ms`, `seconds`, `minutes`, `hours`, `days`,
+`weeks` (singular forms also accepted).
+
+```
+(set ts (parse-date "2024-05-12 10:00:00"))
+(date+ ts 7 "days")            ; → ms-since-epoch one week later
+(date-diff a b "hours")        ; → float
+```
+
+### CSV
+`csv:parse`, `csv:stringify`. Parser handles quoted fields, embedded
+commas, doubled quotes, and CRLF.
+
+### SQLite (optional — build with `make SQLITE=1`)
+
+```
+(set db (sqlite:open ":memory:"))
+(sqlite:exec  db "CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT, age INT)")
+(sqlite:exec  db "INSERT INTO u (name, age) VALUES (?, ?)" (array "Ada" 36))
+(sqlite:query db "SELECT * FROM u WHERE age > ?" (array 30))
+;  → [ { "id": 1, "name": "Ada", "age": 36 } ]
+(sqlite:close db)
+```
+
+Params: array of values for positional `?`, object of values for named
+`:foo` / `@foo`. Cell type mapping: NULL/INTEGER/REAL/TEXT/BLOB ↔
+null/number/number/string/bytes. The bytes ↔ BLOB direction is the
+reason the `bytes` type exists.
+
+KV wrapper on top of the same engine: `kv:open`, `kv:set`, `kv:get`,
+`kv:del`, `kv:keys [prefix]`. Schema is created automatically on
+`kv:open`.
 
 ```
 (print "hi" 1 (array 2 3))     ; space-separated, trailing newline
@@ -248,8 +324,29 @@ divide-by-zero. `random` returns a uniform double in `[0, 1)`.
 ```
 
 ### File I/O
-`read`, `read-lines`, `write`, `append`, `delete`, `list-dir`, `file-info`,
-`copy-file`, `move-file`
+`read`, `read-lines`, `read-bytes`, `write`, `write-bytes`, `append`,
+`delete`, `list-dir`, `file-info`, `copy-file`, `move-file`
+
+`read` truncates at the first NUL (because z strings are NUL-terminated);
+use `read-bytes` + `bytes:*` for binary files. `write-bytes` accepts
+either a `bytes` value or a string.
+
+### Bytes (binary-safe)
+
+```
+(bytes (array 0 1 2 255))     ; → #bytes:4 [00 01 02 ff]
+(bytes "abc")                  ; from string (verbatim — strlen used)
+(hex   (bytes "abc"))          ; → "616263"
+(unhex "de:ad:be:ef")          ; tolerates ":" and whitespace → bytes
+(bytes:get  b i)               ; integer 0..255
+(bytes:slice b s [e])          ; half-open slice → bytes
+(bytes:concat b1 b2 ...)       ; variadic; accepts bytes or strings
+(string->bytes s)              ; explicit conversion
+(bytes->string b)              ; lossy at embedded NULs
+```
+
+`length`, `==`, `print`, `type` (`"bytes"`), and `json:stringify` (encodes
+as hex string) all handle bytes natively.
 
 ```
 (read "data.txt")                              ; whole file as string
@@ -363,8 +460,8 @@ z raises errors as strings. They propagate up until caught with `try`:
 1. **`for` takes a bare symbol**, not a list: `(for x coll body)`, not `(for (x) coll body)`.
 2. **`set` is assignment, not declaration**. Functions defined with `fn`
    live in the current scope; `lambda` returns a function value you can `set`.
-3. **No `let` form.** Use `(set name value)` then refer to `name`.
-4. **No `cond` / `when` / `unless`.** Nest `if` or use `and`/`or`.
+3. **`let` uses `let*` semantics** — bindings evaluate left-to-right and each can reference earlier ones; names don't leak past the body.
+4. **`cond` with no matching clause returns `null`.** A literal `else` (or `true`) in the test position always fires.
 5. **`+` is overloaded for strings** *only when the first argument is a
    string.* `(+ "x=" 5)` → `"x=5"` but `(+ 5 "x")` raises. Use `concat` to
    be safe.

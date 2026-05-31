@@ -69,16 +69,27 @@ Install raylib via vcpkg or grab a pre-built dev-package, make sure
 z-console reuses the same build flags as `z` itself. Without them, the
 matching builtins aren't compiled in — which means **autocomplete won't
 suggest them either** because there's nothing in the env to match. To get
-`img:*` / `vision:*` in the autocomplete popup, build with:
+`img:*` / `vision:*` / `sqlite:*` / `kv:*` in the autocomplete popup,
+build with:
 
 ```sh
-make IMAGE=1                # img:* builtins (needs ImageMagick at runtime)
-make VISION=1               # vision:* builtins (needs zbarimg / opencv-python / alpr)
-make IMAGE=1 VISION=1       # both
+make IMAGE=1                       # img:* builtins (needs ImageMagick at runtime)
+make VISION=1                      # vision:* builtins (needs zbarimg / opencv-python / alpr)
+make SQLITE=1                      # sqlite:* + kv:* (links libsqlite3)
+make IMAGE=1 VISION=1 SQLITE=1     # everything
 ```
 
-Verify with `(help)` inside z-console — `image` and `vision` topics only
-appear when their modules are compiled in.
+Install the SQLite dev headers if you turn that flag on:
+
+| OS              | How |
+| --------------- | --- |
+| macOS           | `brew install sqlite` |
+| Debian / Ubuntu | `sudo apt-get install libsqlite3-dev` |
+| Fedora          | `sudo dnf install sqlite-devel` |
+| Arch            | `sudo pacman -S sqlite` |
+
+Verify with `(help)` inside z-console — `image`, `vision`, and `sqlite`
+topics only appear when their modules are compiled in.
 
 ## Fonts
 

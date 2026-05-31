@@ -12,7 +12,7 @@ setlocal comments=:;
 " well enough for a language that has no significant whitespace.
 setlocal lisp
 setlocal autoindent
-setlocal lispwords=if,do,while,for,fn,lambda,let,set,try,define,cond,when
+setlocal lispwords=if,when,unless,cond,let,do,while,for,fn,lambda,set,try,catch,and,or,quote
 
 " Treat hyphens, colons, and ? as part of identifiers (e.g. `starts-with`,
 " `img:create`, predicates ending in `?`).

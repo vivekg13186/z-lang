@@ -33,8 +33,10 @@ syntax region zInterpolation matchgroup=zInterpolationDelim
 
 " -------- Special forms (head position only is hard without a parser;
 "           highlight everywhere — these names are unlikely to be rebound). --------
-syntax keyword zSpecialForm do if while for fn lambda let set try
-                           \ quote and or define cond when unless
+syntax keyword zSpecialForm do if when unless cond let
+                           \ while for fn lambda set try catch
+                           \ quote and or else
+syntax match   zSpecialForm /\v(\(\s*)@<=(-\>\>?|\&)(\s|\))@=/
 syntax match   zSpecialForm /\v(\&\&|\|\|)/
 
 " -------- Built-in functions --------

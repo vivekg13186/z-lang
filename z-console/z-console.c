@@ -391,8 +391,9 @@ static int g_theme_idx = 0;
 #define g_syntax (TC.syntax)
 
 static const char* ZC_SPECIAL_FORMS[] = {
-    "do", "if", "while", "for", "fn", "lambda", "set", "try", "catch",
-    "and", "or", "quote", "&&", "||", NULL
+    "do", "if", "when", "unless", "cond", "let",
+    "while", "for", "fn", "lambda", "set", "try", "catch",
+    "and", "or", "quote", "else", "&&", "||", "->", "->>", "&", NULL
 };
 static const char* ZC_LITERALS[] = { "true", "false", "null", "nil", NULL };
 
@@ -592,18 +593,35 @@ static int zc_draw_highlighted(const char* text, int len, int x, int y, int size
     return (int)(draw_x - (float)x + 0.5f);
 }
 
-/* Find word-boundary positions for Ctrl+←/→ navigation. */
+/* Find word-boundary positions for Ctrl+←/→ navigation. Both stop at the
+ * nearest newline so multi-line input doesn't suck content from another
+ * line when the user is just trying to skip a word. */
 static int zc_word_left(const char* buf, int pos) {
     if (pos <= 0) return 0;
     pos--;
-    while (pos > 0 && !is_sym_cont((unsigned char)buf[pos])) pos--;
-    while (pos > 0 && is_sym_cont((unsigned char)buf[pos-1])) pos--;
+    while (pos > 0 && buf[pos] != '\n'
+           && !is_sym_cont((unsigned char)buf[pos])) pos--;
+    while (pos > 0 && buf[pos-1] != '\n'
+           && is_sym_cont((unsigned char)buf[pos-1])) pos--;
     return pos;
 }
 static int zc_word_right(const char* buf, int len, int pos) {
     if (pos >= len) return len;
-    while (pos < len && !is_sym_cont((unsigned char)buf[pos])) pos++;
-    while (pos < len && is_sym_cont((unsigned char)buf[pos])) pos++;
+    while (pos < len && buf[pos] != '\n'
+           && !is_sym_cont((unsigned char)buf[pos])) pos++;
+    while (pos < len && buf[pos] != '\n'
+           && is_sym_cont((unsigned char)buf[pos])) pos++;
+    return pos;
+}
+
+/* Start / end of the line containing `pos`. End is the index of '\n' (or
+ * input_len if on the last line). */
+static int zc_line_start(const char* buf, int pos) {
+    while (pos > 0 && buf[pos-1] != '\n') pos--;
+    return pos;
+}
+static int zc_line_end(const char* buf, int len, int pos) {
+    while (pos < len && buf[pos] != '\n') pos++;
     return pos;
 }
 
@@ -949,6 +967,12 @@ typedef struct { const char* name; const char* example; } ZcExample;
 static const ZcExample Z_CONSOLE_EXAMPLES[] = {
     { "do", "(do (print \"a\") (print \"b\"))" },
     { "if", "(if (> x 0) \"pos\" \"neg\")" },
+    { "when", "(when (> x 0) (print \"positive\"))" },
+    { "unless", "(unless (zero? x) (print x))" },
+    { "cond", "(cond ((> x 0) \"+\") ((< x 0) \"-\") (else \"0\"))" },
+    { "let", "(let ((x 10) (y 20)) (+ x y))" },
+    { "->",  "(-> \"  hi  \" trim upper)" },
+    { "->>", "(->> xs (map sq) (filter pos?))" },
     { "while", "(while (< i 10) (set i (+ i 1)))" },
     { "for", "(for x (array 1 2 3) (print x))" },
     { "fn", "(fn add (a b) (+ a b))" },
@@ -1028,7 +1052,17 @@ static const ZcExample Z_CONSOLE_EXAMPLES[] = {
     { "help", "(help \"strings\")" },
     { "read", "(read \"data.txt\")" },
     { "read-lines", "(read-lines \"data.txt\")" },
+    { "read-bytes", "(read-bytes \"image.png\")" },
     { "write", "(write \"out.txt\" \"content\")" },
+    { "write-bytes", "(write-bytes \"out.bin\" b)" },
+    { "bytes", "(bytes (array 0 1 2 255))" },
+    { "hex", "(hex (bytes \"abc\"))" },
+    { "unhex", "(unhex \"deadbeef\")" },
+    { "bytes:get", "(bytes:get b 0)" },
+    { "bytes:slice", "(bytes:slice b 0 4)" },
+    { "bytes:concat", "(bytes:concat b1 b2)" },
+    { "string->bytes", "(string->bytes \"hi\")" },
+    { "bytes->string", "(bytes->string b)" },
     { "append", "(append \"log.txt\" \"a line\")" },
     { "delete", "(delete \"tmp.txt\")" },
     { "list-dir", "(list-dir \".\")" },
@@ -1083,6 +1117,22 @@ static const ZcExample Z_CONSOLE_EXAMPLES[] = {
     { "vision:faces", "(vision:faces \"group.jpg\")" },
     { "vision:objects", "(vision:objects \"street.jpg\")" },
     { "vision:plate", "(vision:plate \"car.jpg\")" },
+    { "sqlite:open",   "(sqlite:open \":memory:\")" },
+    { "sqlite:exec",   "(sqlite:exec db \"INSERT ...\" (array v))" },
+    { "sqlite:query",  "(sqlite:query db \"SELECT ...\" (array v))" },
+    { "sqlite:close",  "(sqlite:close db)" },
+    { "sqlite:last-insert-id", "(sqlite:last-insert-id db)" },
+    { "kv:open",       "(kv:open \"store.db\")" },
+    { "kv:set",        "(kv:set s \"k\" v)" },
+    { "kv:get",        "(kv:get s \"k\")" },
+    { "kv:del",        "(kv:del s \"k\")" },
+    { "kv:keys",       "(kv:keys s \"prefix\")" },
+    { "html:query",   "(html:query \"li.a\" html)" },
+    { "html:text",    "(html:text \"<b>hi</b>\")" },
+    { "html:attr",    "(html:attr \"href\" link)" },
+    { "xml:query",    "(xml:query \"/root/user/name\" xml)" },
+    { "xml:text",     "(xml:text \"<n>Ada</n>\")" },
+    { "xml:attr",     "(xml:attr \"id\" frag)" },
     /* The ui:* draw helpers added by z-console itself. */
     { "ui:text", "(ui:text \"hello\")" },
     { "ui:circle", "(ui:circle 100 100 50 \"red\")" },
@@ -1117,6 +1167,13 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     /* special forms */
     { "do",          "expr..." },
     { "if",          "cond then [else]" },
+    { "when",        "cond body..." },
+    { "unless",      "cond body..." },
+    { "cond",        "(test body...) (test body...) ..." },
+    { "let",         "((name val) ...) body..." },
+    { "->",          "initial step ..." },
+    { "->>",         "initial step ..." },
+    { "fn",          "name (params... [& rest]) body..." },
     { "while",       "cond body..." },
     { "for",         "var coll body..." },
     { "fn",          "name (params) body..." },
@@ -1187,6 +1244,39 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     { "asin",  "x" }, { "acos", "x" }, { "atan",  "x" }, { "atan2", "y x" },
     { "sinh",  "x" }, { "cosh", "x" }, { "tanh",  "x" },
     { "random", "" },
+    { "random-int",    "lo hi" },
+    { "random-choice", "array" },
+    { "shuffle",       "array" },
+    { "random-seed",   "n" },
+    { "clamp",         "x lo hi" },
+    { "lerp",          "a b t" },
+    { "is-nan",        "x" },
+    { "is-finite",     "x" },
+    { "format",        "\"fmt\" args..." },
+    { "pad-left",      "s n [ch]" },
+    { "pad-right",     "s n [ch]" },
+    { "repeat",        "s n" },
+    { "count-occurrences", "haystack needle" },
+    { "slugify",       "s" },
+    { "merge",         "obj/arr ..." },
+    { "dissoc",        "obj key" },
+    { "select-keys",   "obj keys-array" },
+    { "update",        "obj key fn" },
+    { "distinct",      "array" },
+    { "zip",           "array array ..." },
+    { "take",          "n array" },
+    { "drop",          "n array" },
+    { "take-while",    "pred array" },
+    { "drop-while",    "pred array" },
+    { "group-by",      "fn array" },
+    { "get-in",        "obj path-array" },
+    { "assoc-in",      "obj path-array value" },
+    { "update-in",     "obj path-array fn" },
+    { "parse-date",    "s [fmt]" },
+    { "date+",         "ts amount unit" },
+    { "date-diff",     "a b unit" },
+    { "csv:parse",     "s" },
+    { "csv:stringify", "rows" },
 
     /* core / system */
     { "print",       "...values" },
@@ -1209,8 +1299,18 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     /* file I/O */
     { "read",        "path" },
     { "read-lines",  "path" },
+    { "read-bytes",  "path" },
     { "write",       "path content" },
+    { "write-bytes", "path bytes-or-string" },
     { "append",      "path content" },
+    { "bytes",       "string-or-array-or-bytes" },
+    { "hex",         "bytes-or-string" },
+    { "unhex",       "hex-string" },
+    { "bytes:get",   "bytes index" },
+    { "bytes:slice", "bytes start [end]" },
+    { "bytes:concat", "bytes-or-string ..." },
+    { "string->bytes", "string" },
+    { "bytes->string", "bytes" },
     { "delete",      "path" },
     { "list-dir",    "path" },
     { "file-info",   "path" },
@@ -1262,6 +1362,26 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     { "vision:faces",   "path" },
     { "vision:objects", "path" },
     { "vision:plate",   "path" },
+
+    /* SQLite + KV (optional) */
+    { "sqlite:open",   "path" },
+    { "sqlite:exec",   "db sql [params]" },
+    { "sqlite:query",  "db sql [params]" },
+    { "sqlite:close",  "db" },
+    { "sqlite:last-insert-id", "db" },
+    { "kv:open",       "path" },
+    { "kv:set",        "store key value" },
+    { "kv:get",        "store key" },
+    { "kv:del",        "store key" },
+    { "kv:keys",       "store [prefix]" },
+
+    /* HTML / XML query */
+    { "html:query", "selector html" },
+    { "html:text",  "html-fragment" },
+    { "html:attr",  "name fragment" },
+    { "xml:query",  "path xml" },
+    { "xml:text",   "xml-fragment" },
+    { "xml:attr",   "name fragment" },
 
     /* z-console primitives */
     { "ui:text",      "line" },
@@ -1334,8 +1454,9 @@ static const char* zc_call_shape(const char* name, Env* env,
  * ============================================================ */
 
 static const char* Z_CONSOLE_FORMS[] = {
-    "do", "if", "while", "for", "fn", "lambda", "set", "try", "catch",
-    "and", "or", "quote", NULL
+    "do", "if", "when", "unless", "cond", "let",
+    "while", "for", "fn", "lambda", "set", "try", "catch",
+    "and", "or", "quote", "else", "->", "->>", NULL
 };
 
 #define ZC_MAX_CANDIDATES 256
@@ -1643,10 +1764,16 @@ int main(int argc, char** argv) {
             if (mod_ctrl) input_cursor = zc_word_right(input_buf, input_len, input_cursor);
             else if (input_cursor < input_len) input_cursor++;
         }
-        if (IsKeyPressed(KEY_HOME)) input_cursor = 0;
-        if (IsKeyPressed(KEY_END))  input_cursor = input_len;
+        /* Home / End move within the current line. Ctrl+Home / Ctrl+End
+         * still jump to the start / end of the whole buffer. */
+        if (IsKeyPressed(KEY_HOME))
+            input_cursor = mod_ctrl ? 0 : zc_line_start(input_buf, input_cursor);
+        if (IsKeyPressed(KEY_END))
+            input_cursor = mod_ctrl ? input_len
+                                    : zc_line_end(input_buf, input_len, input_cursor);
 
-        /* Ctrl+W — kill word backward. */
+        /* Ctrl+W — kill word backward. zc_word_left already stops at
+         * newlines, so this never reaches into the previous line. */
         if (mod_ctrl && IsKeyPressed(KEY_W) && input_cursor > 0) {
             int wstart = zc_word_left(input_buf, input_cursor);
             memmove(input_buf + wstart, input_buf + input_cursor,
@@ -1654,17 +1781,30 @@ int main(int argc, char** argv) {
             input_len    -= input_cursor - wstart;
             input_cursor  = wstart;
         }
-        /* Ctrl+U — kill to start of line. */
+        /* Ctrl+U — kill from cursor back to the start of the current line. */
         if (mod_ctrl && IsKeyPressed(KEY_U) && input_cursor > 0) {
-            memmove(input_buf, input_buf + input_cursor,
-                    input_len - input_cursor + 1);
-            input_len    -= input_cursor;
-            input_cursor  = 0;
+            int ls = zc_line_start(input_buf, input_cursor);
+            if (ls < input_cursor) {
+                memmove(input_buf + ls, input_buf + input_cursor,
+                        input_len - input_cursor + 1);
+                input_len    -= input_cursor - ls;
+                input_cursor  = ls;
+            }
         }
-        /* Ctrl+K — kill to end of line. */
+        /* Ctrl+K — kill from cursor to the end of the current line.
+         * If already at end-of-line, nibble the following '\n' so the
+         * line is joined with the next. */
         if (mod_ctrl && IsKeyPressed(KEY_K) && input_cursor < input_len) {
-            input_buf[input_cursor] = 0;
-            input_len = input_cursor;
+            int le = zc_line_end(input_buf, input_len, input_cursor);
+            if (le > input_cursor) {
+                memmove(input_buf + input_cursor, input_buf + le,
+                        input_len - le + 1);
+                input_len -= le - input_cursor;
+            } else if (le < input_len && input_buf[le] == '\n') {
+                memmove(input_buf + le, input_buf + le + 1,
+                        input_len - le);
+                input_len--;
+            }
         }
         /* Ctrl+C / Ctrl+V / Ctrl+X — system clipboard.
          * Ctrl+L is used by clear-screen and is handled separately below. */
@@ -2274,15 +2414,14 @@ int main(int argc, char** argv) {
 
         /* Status bar — bottom strip. */
         int bar_y = H - status_h;
-        DrawRectangle(0, bar_y, W, status_h, (Color){20,22,28,255});
+        DrawRectangle(0, bar_y, W, status_h, TC.status_bg);
         DrawLine(0, bar_y, W, bar_y, BORDER);
-        char status[128];
+        char status[160];
         snprintf(status, sizeof(status),
-                 " %d cells · last eval %.1f ms · %s · Ctrl+S save · Ctrl+= / Ctrl+- font · Ctrl+L clear",
+                 " %d cells · last eval %.1f ms · %s · F1 help · Ctrl+S save · Ctrl+T theme · Ctrl+= / Ctrl+- font · Ctrl+L clear",
                  g_cell_count, last_eval_ms,
                  g_console_font_loaded ? "Menlo" : "default font");
-        zc_draw_text(status, 6, bar_y + 2, FS_TEXT - 2,
-                     (Color){150,150,170,255});
+        zc_draw_text(status, 6, bar_y + 2, FS_TEXT - 2, TC.status_fg);
 
         /* Scroll-to-bottom floating button, visible only when the user has
          * scrolled up. Click jumps back to the latest cell. */

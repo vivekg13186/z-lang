@@ -122,6 +122,7 @@ typedef enum {
     V_BOOL,
     V_NUM,
     V_STR,
+    V_BYTES,   /* arbitrary binary data — may contain NUL */
     V_SYM,
     V_LIST,    /* code list / s-expression  */
     V_ARRAY,   /* runtime array             */
@@ -152,12 +153,18 @@ typedef struct {
     char*  name;      /* may be NULL for lambdas */
 } VUserFn;
 
+typedef struct {
+    unsigned char* data;
+    size_t         len;
+} VBytes;
+
 struct Value {
     ValueType type;
     union {
         int      b;
         double   n;
         char*    s;
+        VBytes   bytes;
         VList    list;     /* used by V_LIST and V_ARRAY */
         VObject  obj;
         VUserFn  fn;
@@ -263,6 +270,22 @@ static Value* v_str_take(char* s) {
     v->as.s = s;
     return v;
 }
+/* Copy `n` bytes from `data` into a new V_BYTES value. */
+static Value* v_bytes(const unsigned char* data, size_t n) {
+    Value* v = val_new(V_BYTES);
+    v->as.bytes.data = (unsigned char*)malloc(n + 1);
+    if (n) memcpy(v->as.bytes.data, data, n);
+    v->as.bytes.data[n] = 0;   /* sentinel so accidental %s prints don't overrun */
+    v->as.bytes.len  = n;
+    return v;
+}
+/* Take ownership of `data` (must be malloc'd). */
+static Value* v_bytes_take(unsigned char* data, size_t n) {
+    Value* v = val_new(V_BYTES);
+    v->as.bytes.data = data;
+    v->as.bytes.len  = n;
+    return v;
+}
 static Value* v_sym(const char* s) {
     Value* v = val_new(V_SYM);
     v->as.s = str_dup(s);
@@ -346,7 +369,8 @@ static int is_truthy(Value* v) {
         case V_NULL: return 0;
         case V_BOOL: return v->as.b;
         case V_NUM:  return v->as.n != 0.0;
-        case V_STR:  return v->as.s[0] != '\0';
+        case V_STR:   return v->as.s[0] != '\0';
+        case V_BYTES: return v->as.bytes.len > 0;
         case V_ARRAY:
         case V_LIST: return v->as.list.len > 0;
         case V_OBJECT: return v->as.obj.len > 0;
@@ -361,6 +385,7 @@ static const char* type_name(Value* v) {
         case V_BOOL:   return "boolean";
         case V_NUM:    return "number";
         case V_STR:    return "string";
+        case V_BYTES:  return "bytes";
         case V_SYM:    return "symbol";
         case V_LIST:   return "list";
         case V_ARRAY:  return "array";
@@ -384,6 +409,9 @@ static int value_equals(Value* a, Value* b) {
         case V_NUM:  return a->as.n == b->as.n;
         case V_STR:
         case V_SYM:  return strcmp(a->as.s, b->as.s) == 0;
+        case V_BYTES:
+            return a->as.bytes.len == b->as.bytes.len
+                && memcmp(a->as.bytes.data, b->as.bytes.data, a->as.bytes.len) == 0;
         case V_ARRAY:
         case V_LIST: {
             if (a->as.list.len != b->as.list.len) return 0;
@@ -445,6 +473,18 @@ static void print_value(FILE* out, Value* v, int as_repr) {
             if (as_repr) print_string_escaped(out, v->as.s);
             else fputs(v->as.s, out);
             break;
+        case V_BYTES: {
+            /* Print as #bytes:<len> [<hex>...]  — first 16 bytes, ellipsis. */
+            fprintf(out, "#bytes:%zu [", v->as.bytes.len);
+            size_t shown = v->as.bytes.len < 16 ? v->as.bytes.len : 16;
+            for (size_t i = 0; i < shown; i++) {
+                if (i) fputc(' ', out);
+                fprintf(out, "%02x", v->as.bytes.data[i]);
+            }
+            if (v->as.bytes.len > shown) fputs(" ...", out);
+            fputc(']', out);
+            break;
+        }
         case V_SYM:
             fputs(v->as.s, out);
             break;
@@ -563,6 +603,16 @@ static void json_encode(StrBuf* sb, Value* v) {
             break;
         }
         case V_STR: sb_escape_string(sb, v->as.s); break;
+        case V_BYTES: {
+            /* JSON has no binary type; encode as hex inside a string. */
+            sb_putc(sb, '"');
+            for (size_t i = 0; i < v->as.bytes.len; i++) {
+                char hx[4]; snprintf(hx, sizeof(hx), "%02x", v->as.bytes.data[i]);
+                sb_puts(sb, hx);
+            }
+            sb_putc(sb, '"');
+            break;
+        }
         case V_ARRAY:
         case V_LIST: {
             sb_putc(sb, '[');
@@ -703,15 +753,53 @@ static void tokenize(Lexer* L) {
             continue;
         }
         /* number? leading digit, or -/+ tightly followed by a digit (no whitespace).
-           A '-' followed by space stays a symbol, so `(- 5)` still parses as subtract. */
+           A '-' followed by space stays a symbol, so `(- 5)` still parses as subtract.
+           Hex (0x…) and binary (0b…) literals are supported, optionally
+           signed, with `_` allowed as a digit separator for readability. */
         if (isdigit((unsigned char)c) ||
             ((c == '-' || c == '+') && L->pos + 1 < L->len && isdigit((unsigned char)L->src[L->pos + 1]))) {
-            size_t s = L->pos;
-            if (c == '+' || c == '-') L->pos++;
-            while (L->pos < L->len && isdigit((unsigned char)L->src[L->pos])) L->pos++;
+            size_t s = L->pos;        /* literal start, including any sign */
+            int sign = 1;
+            if (c == '+' || c == '-') {
+                if (c == '-') sign = -1;
+                L->pos++;
+            }
+            /* Radix prefix: 0x / 0X (hex) or 0b / 0B (binary). */
+            if (L->pos + 1 < L->len && L->src[L->pos] == '0'
+                && (L->src[L->pos+1] == 'x' || L->src[L->pos+1] == 'X'
+                 || L->src[L->pos+1] == 'b' || L->src[L->pos+1] == 'B')) {
+                int base = (L->src[L->pos+1] == 'x' || L->src[L->pos+1] == 'X') ? 16 : 2;
+                L->pos += 2;
+                size_t ds = L->pos;
+                while (L->pos < L->len) {
+                    char d = L->src[L->pos];
+                    int ok;
+                    if (base == 16) ok = (d == '_' || isxdigit((unsigned char)d));
+                    else            ok = (d == '_' || d == '0' || d == '1');
+                    if (!ok) break;
+                    L->pos++;
+                }
+                if (L->pos == ds) lex_error(L, base == 16
+                    ? "expected hex digits after 0x"
+                    : "expected binary digits after 0b");
+                char buf[64];
+                size_t k = 0;
+                for (size_t i = ds; i < L->pos && k < sizeof(buf) - 1; i++)
+                    if (L->src[i] != '_') buf[k++] = L->src[i];
+                buf[k] = 0;
+                /* strtoull handles the full 64-bit range; cast to double. */
+                double val = sign * (double)strtoull(buf, NULL, base);
+                Token t = {TK_NUM, NULL, val, L->line};
+                tok_push(L, t);
+                continue;
+            }
+            /* Decimal / float fallthrough. */
+            while (L->pos < L->len && (isdigit((unsigned char)L->src[L->pos])
+                                     || L->src[L->pos] == '_')) L->pos++;
             if (L->pos < L->len && L->src[L->pos] == '.') {
                 L->pos++;
-                while (L->pos < L->len && isdigit((unsigned char)L->src[L->pos])) L->pos++;
+                while (L->pos < L->len && (isdigit((unsigned char)L->src[L->pos])
+                                         || L->src[L->pos] == '_')) L->pos++;
             }
             if (L->pos < L->len && (L->src[L->pos] == 'e' || L->src[L->pos] == 'E')) {
                 L->pos++;
@@ -719,10 +807,10 @@ static void tokenize(Lexer* L) {
                 while (L->pos < L->len && isdigit((unsigned char)L->src[L->pos])) L->pos++;
             }
             char buf[64];
-            size_t n = L->pos - s;
-            if (n >= sizeof(buf)) lex_error(L, "number too long");
-            memcpy(buf, L->src + s, n);
-            buf[n] = '\0';
+            size_t k = 0;
+            for (size_t i = s; i < L->pos && k < sizeof(buf) - 1; i++)
+                if (L->src[i] != '_') buf[k++] = L->src[i];
+            buf[k] = '\0';
             Token t = {TK_NUM, NULL, strtod(buf, NULL), L->line};
             tok_push(L, t);
             continue;
@@ -958,6 +1046,129 @@ static Value* eval_if(VList* args, Env* env) {
     return v_null();
 }
 
+/* (when cond body...) — shortcut for (if cond (do body...)); else → null. */
+static Value* eval_when(VList* args, Env* env) {
+    if (args->len < 2) z_raise("when: expected (when cond body...)");
+    Value* c = eval(args->items[0], env);
+    if (!is_truthy(c)) return v_null();
+    Value* last = v_null();
+    for (size_t i = 1; i < args->len; i++) last = eval(args->items[i], env);
+    return last;
+}
+
+/* (unless cond body...) — inverse of when. */
+static Value* eval_unless(VList* args, Env* env) {
+    if (args->len < 2) z_raise("unless: expected (unless cond body...)");
+    Value* c = eval(args->items[0], env);
+    if (is_truthy(c)) return v_null();
+    Value* last = v_null();
+    for (size_t i = 1; i < args->len; i++) last = eval(args->items[i], env);
+    return last;
+}
+
+/* (cond (test1 result1...) (test2 result2...) ... ) — first truthy test
+ * wins; its result expressions are evaluated as a do-block. A literal
+ * `else` (or `true`) symbol in test position is the fallthrough clause.
+ * If no clause matches, returns null. */
+static Value* eval_cond(VList* args, Env* env) {
+    for (size_t i = 0; i < args->len; i++) {
+        Value* clause = args->items[i];
+        if (clause->type != V_LIST || clause->as.list.len == 0)
+            z_raise("cond: each clause must be (test result...)");
+        Value* test = clause->as.list.items[0];
+        int matched;
+        /* `else` / `true` always fire — common Lisp idiom. */
+        if (test->type == V_SYM
+            && (strcmp(test->as.s, "else") == 0
+             || strcmp(test->as.s, "true") == 0)) {
+            matched = 1;
+        } else {
+            matched = is_truthy(eval(test, env));
+        }
+        if (!matched) continue;
+        Value* last = v_null();
+        for (size_t j = 1; j < clause->as.list.len; j++)
+            last = eval(clause->as.list.items[j], env);
+        return last;
+    }
+    return v_null();
+}
+
+/* Thread the accumulator `acc` into `step` and return the resulting call
+ * Value. `last` = 1 → thread-last (->>) inserts at the end; else thread-
+ * first (->) inserts at index 1. A bare symbol step is wrapped as a call. */
+static Value* eval_thread_step(Value* acc, Value* step, int last, Env* env) {
+    Value* call = v_list();
+    if (step->type == V_LIST) {
+        if (step->as.list.len == 0)
+            z_raise("threading macro: empty step ()");
+        if (last) {
+            /* (f a b ...)  →  (f a b ... acc) */
+            for (size_t i = 0; i < step->as.list.len; i++)
+                vlist_push(&call->as.list, step->as.list.items[i]);
+            vlist_push(&call->as.list, acc);
+        } else {
+            /* (f a b ...)  →  (f acc a b ...) */
+            vlist_push(&call->as.list, step->as.list.items[0]);
+            vlist_push(&call->as.list, acc);
+            for (size_t i = 1; i < step->as.list.len; i++)
+                vlist_push(&call->as.list, step->as.list.items[i]);
+        }
+    } else if (step->type == V_SYM) {
+        /* Bare symbol → wrap as (f acc). */
+        vlist_push(&call->as.list, step);
+        vlist_push(&call->as.list, acc);
+    } else {
+        z_raise("threading macro: each step must be a list or symbol");
+    }
+    return eval(call, env);
+}
+
+/* (-> x step step ...)  thread-first
+ * (->> x step step ...) thread-last
+ *
+ * Sugar for chained calls: each step takes the previous result as the
+ * 1st (or last) argument. Bare symbols are wrapped as (f acc). */
+static Value* eval_thread_first(VList* args, Env* env) {
+    if (args->len == 0) z_raise("->: expected (-> initial steps...)");
+    Value* acc = eval(args->items[0], env);
+    for (size_t i = 1; i < args->len; i++)
+        acc = eval_thread_step(acc, args->items[i], 0, env);
+    return acc;
+}
+static Value* eval_thread_last(VList* args, Env* env) {
+    if (args->len == 0) z_raise("->>: expected (->> initial steps...)");
+    Value* acc = eval(args->items[0], env);
+    for (size_t i = 1; i < args->len; i++)
+        acc = eval_thread_step(acc, args->items[i], 1, env);
+    return acc;
+}
+
+/* (let ((name val) (name val) ...) body...) — introduces block-local
+ * bindings in a fresh child env. Bindings are evaluated left-to-right,
+ * each in the env extended by the bindings before it (i.e. `let*`
+ * semantics), which is more useful in practice than parallel `let`. */
+static Value* eval_let(VList* args, Env* env) {
+    if (args->len < 2) z_raise("let: expected (let (bindings...) body...)");
+    Value* binds = args->items[0];
+    if (binds->type != V_LIST)
+        z_raise("let: first argument must be a list of (name value) pairs");
+    Env* sub = env_new(env);
+    for (size_t i = 0; i < binds->as.list.len; i++) {
+        Value* pair = binds->as.list.items[i];
+        if (pair->type != V_LIST || pair->as.list.len != 2)
+            z_raise("let: each binding must be a (name value) list");
+        Value* nameval = pair->as.list.items[0];
+        if (nameval->type != V_SYM)
+            z_raise("let: binding name must be a symbol");
+        Value* val = eval(pair->as.list.items[1], sub);
+        env_define(sub, nameval->as.s, val);
+    }
+    Value* last = v_null();
+    for (size_t i = 1; i < args->len; i++) last = eval(args->items[i], sub);
+    return last;
+}
+
 static Value* eval_while(VList* args, Env* env) {
     if (args->len < 2) z_raise("while: expected (while cond body...)");
     Value* last = v_null();
@@ -1075,6 +1286,7 @@ void       (*z_eval_tick)(void) = NULL;
 static long  z_eval_tick_counter = 0;
 
 static Value* eval(Value* expr, Env* env) {
+tail_call:
     if (z_eval_tick && ((++z_eval_tick_counter) & 0xFFF) == 0) z_eval_tick();
     if (z_eval_interrupted) { z_eval_interrupted = 0; z_raise("eval interrupted (Ctrl+.)"); }
     if (!expr) return v_null();
@@ -1126,8 +1338,107 @@ static Value* eval(Value* expr, Env* env) {
             if (head->type == V_SYM) {
                 const char* op = head->as.s;
                 VList rest = { l->items + 1, l->len - 1, 0 };
-                if (strcmp(op, "do") == 0)     return eval_do(&rest, 0, env);
-                if (strcmp(op, "if") == 0)     return eval_if(&rest, env);
+                /* ---- TCO-aware special forms ----
+                 * Each of these inlines the tail-position evaluation so a
+                 * (fact n acc) → (fact (- n 1) (* n acc)) recursion reuses
+                 * the C stack frame instead of growing it. */
+                if (strcmp(op, "do") == 0) {
+                    if (rest.len == 0) return v_null();
+                    for (size_t i = 0; i + 1 < rest.len; i++)
+                        eval(rest.items[i], env);
+                    expr = rest.items[rest.len - 1];
+                    goto tail_call;
+                }
+                if (strcmp(op, "if") == 0) {
+                    if (rest.len < 2 || rest.len > 3)
+                        z_raise("if: expected (if cond then [else])");
+                    Value* c = eval(rest.items[0], env);
+                    if (is_truthy(c))      { expr = rest.items[1]; goto tail_call; }
+                    if (rest.len == 3)     { expr = rest.items[2]; goto tail_call; }
+                    return v_null();
+                }
+                if (strcmp(op, "when") == 0) {
+                    if (rest.len < 2) z_raise("when: expected (when cond body...)");
+                    if (!is_truthy(eval(rest.items[0], env))) return v_null();
+                    for (size_t i = 1; i + 1 < rest.len; i++) eval(rest.items[i], env);
+                    expr = rest.items[rest.len - 1];
+                    goto tail_call;
+                }
+                if (strcmp(op, "unless") == 0) {
+                    if (rest.len < 2) z_raise("unless: expected (unless cond body...)");
+                    if (is_truthy(eval(rest.items[0], env))) return v_null();
+                    for (size_t i = 1; i + 1 < rest.len; i++) eval(rest.items[i], env);
+                    expr = rest.items[rest.len - 1];
+                    goto tail_call;
+                }
+                if (strcmp(op, "cond") == 0) {
+                    for (size_t i = 0; i < rest.len; i++) {
+                        Value* clause = rest.items[i];
+                        if (clause->type != V_LIST || clause->as.list.len == 0)
+                            z_raise("cond: each clause must be (test result...)");
+                        Value* test = clause->as.list.items[0];
+                        int matched;
+                        if (test->type == V_SYM
+                            && (strcmp(test->as.s, "else") == 0
+                             || strcmp(test->as.s, "true") == 0)) {
+                            matched = 1;
+                        } else {
+                            matched = is_truthy(eval(test, env));
+                        }
+                        if (!matched) continue;
+                        if (clause->as.list.len == 1) return v_null();
+                        for (size_t j = 1; j + 1 < clause->as.list.len; j++)
+                            eval(clause->as.list.items[j], env);
+                        expr = clause->as.list.items[clause->as.list.len - 1];
+                        goto tail_call;
+                    }
+                    return v_null();
+                }
+                if (strcmp(op, "let") == 0) {
+                    if (rest.len < 2)
+                        z_raise("let: expected (let (bindings...) body...)");
+                    Value* binds = rest.items[0];
+                    if (binds->type != V_LIST)
+                        z_raise("let: first argument must be a list of (name value) pairs");
+                    Env* sub = env_new(env);
+                    for (size_t i = 0; i < binds->as.list.len; i++) {
+                        Value* pair = binds->as.list.items[i];
+                        if (pair->type != V_LIST || pair->as.list.len != 2)
+                            z_raise("let: each binding must be a (name value) list");
+                        Value* nameval = pair->as.list.items[0];
+                        if (nameval->type != V_SYM)
+                            z_raise("let: binding name must be a symbol");
+                        env_define(sub, nameval->as.s,
+                                   eval(pair->as.list.items[1], sub));
+                    }
+                    if (rest.len == 1) return v_null();
+                    for (size_t i = 1; i + 1 < rest.len; i++)
+                        eval(rest.items[i], sub);
+                    expr = rest.items[rest.len - 1];
+                    env  = sub;
+                    goto tail_call;
+                }
+                if (strcmp(op, "and") == 0 || strcmp(op, "&&") == 0) {
+                    if (rest.len == 0) return v_true();
+                    for (size_t i = 0; i + 1 < rest.len; i++) {
+                        Value* v = eval(rest.items[i], env);
+                        if (!is_truthy(v)) return v_false();
+                    }
+                    expr = rest.items[rest.len - 1];
+                    goto tail_call;
+                }
+                if (strcmp(op, "or") == 0 || strcmp(op, "||") == 0) {
+                    if (rest.len == 0) return v_false();
+                    for (size_t i = 0; i + 1 < rest.len; i++) {
+                        Value* v = eval(rest.items[i], env);
+                        if (is_truthy(v)) return v;
+                    }
+                    expr = rest.items[rest.len - 1];
+                    goto tail_call;
+                }
+                /* Non-tail special forms — keep the helper versions. */
+                if (strcmp(op, "->") == 0)     return eval_thread_first(&rest, env);
+                if (strcmp(op, "->>") == 0)    return eval_thread_last(&rest, env);
                 if (strcmp(op, "while") == 0)  return eval_while(&rest, env);
                 if (strcmp(op, "for") == 0)    return eval_for(&rest, env);
                 if (strcmp(op, "fn") == 0)     return eval_fn(&rest, env, 0);
@@ -1138,22 +1449,6 @@ static Value* eval(Value* expr, Env* env) {
                     if (rest.len != 1) z_raise("quote: expected one argument");
                     return rest.items[0];
                 }
-                if (strcmp(op, "and") == 0 || strcmp(op, "&&") == 0) {
-                    Value* last = v_true();
-                    for (size_t i = 0; i < rest.len; i++) {
-                        last = eval(rest.items[i], env);
-                        if (!is_truthy(last)) return v_false();
-                    }
-                    return rest.len ? last : v_true();
-                }
-                if (strcmp(op, "or") == 0 || strcmp(op, "||") == 0) {
-                    Value* last = v_false();
-                    for (size_t i = 0; i < rest.len; i++) {
-                        last = eval(rest.items[i], env);
-                        if (is_truthy(last)) return last;
-                    }
-                    return last;
-                }
             }
             /* Regular call: evaluate head and args */
             Value* callee = eval(head, env);
@@ -1162,6 +1457,49 @@ static Value* eval(Value* expr, Env* env) {
             for (size_t i = 1; i < l->len; i++) {
                 argv[argc++] = eval(l->items[i], env);
             }
+            /* TCO: a user-defined function in tail position is the whole
+             * point of this exercise. Bind params here (mirroring apply()
+             * for V_FN) and `goto tail_call` so we don't grow the stack. */
+            if (callee && callee->type == V_FN) {
+                Env* call_env = env_new(callee->as.fn.closure);
+                VList* params = &callee->as.fn.params->as.list;
+                const char* fname =
+                    callee->as.fn.name ? callee->as.fn.name : "<anon>";
+                int rest_at = -1;
+                for (size_t i = 0; i < params->len; i++) {
+                    Value* p = params->items[i];
+                    if (p->type == V_SYM && strcmp(p->as.s, "&") == 0) {
+                        if (rest_at >= 0)
+                            z_raise("%s: only one `&` allowed in parameter list", fname);
+                        if (i + 1 != params->len - 1)
+                            z_raise("%s: `&` must be followed by exactly one name", fname);
+                        rest_at = (int)i;
+                    }
+                }
+                if (rest_at < 0) {
+                    if ((size_t)argc != params->len)
+                        z_raise("function %s expected %zu args, got %d",
+                                fname, params->len, argc);
+                    for (size_t i = 0; i < params->len; i++)
+                        env_define(call_env, sym_name(params->items[i]), argv[i]);
+                } else {
+                    int fixed = rest_at;
+                    if (argc < fixed)
+                        z_raise("function %s expected at least %d args, got %d",
+                                fname, fixed, argc);
+                    for (int i = 0; i < fixed; i++)
+                        env_define(call_env, sym_name(params->items[i]), argv[i]);
+                    Value* rest_v = v_array();
+                    for (int i = fixed; i < argc; i++)
+                        vlist_push(&rest_v->as.list, argv[i]);
+                    env_define(call_env, sym_name(params->items[rest_at + 1]), rest_v);
+                }
+                free(argv);
+                expr = callee->as.fn.body;
+                env  = call_env;
+                goto tail_call;
+            }
+            /* Native call — no TCO. */
             Value* r = apply(callee, argc, argv, env);
             free(argv);
             return r;
@@ -1179,13 +1517,42 @@ static Value* apply(Value* callee, int argc, Value** argv, Env* env) {
     if (callee->type == V_FN) {
         Env* call_env = env_new(callee->as.fn.closure);
         VList* params = &callee->as.fn.params->as.list;
-        if ((size_t)argc != params->len) {
-            z_raise("function %s expected %zu args, got %d",
-                    callee->as.fn.name ? callee->as.fn.name : "<anon>",
-                    params->len, argc);
-        }
+        const char* fname =
+            callee->as.fn.name ? callee->as.fn.name : "<anon>";
+
+        /* Look for an `&` rest marker. Everything before `&` binds 1:1;
+         * the symbol after `&` (exactly one) collects the rest into an
+         * array. So (fn log (level & messages) ...) accepts >= 1 args. */
+        int rest_at = -1;
         for (size_t i = 0; i < params->len; i++) {
-            env_define(call_env, sym_name(params->items[i]), argv[i]);
+            Value* p = params->items[i];
+            if (p->type == V_SYM && strcmp(p->as.s, "&") == 0) {
+                if (rest_at >= 0)
+                    z_raise("%s: only one `&` allowed in parameter list", fname);
+                if (i + 1 != params->len - 1)
+                    z_raise("%s: `&` must be followed by exactly one name", fname);
+                rest_at = (int)i;
+            }
+        }
+
+        if (rest_at < 0) {
+            if ((size_t)argc != params->len)
+                z_raise("function %s expected %zu args, got %d",
+                        fname, params->len, argc);
+            for (size_t i = 0; i < params->len; i++)
+                env_define(call_env, sym_name(params->items[i]), argv[i]);
+        } else {
+            int fixed = rest_at;       /* count of regular params before `&` */
+            if (argc < fixed)
+                z_raise("function %s expected at least %d args, got %d",
+                        fname, fixed, argc);
+            for (int i = 0; i < fixed; i++)
+                env_define(call_env, sym_name(params->items[i]), argv[i]);
+            /* Collect remainder into an array. */
+            Value* rest = v_array();
+            for (int i = fixed; i < argc; i++)
+                vlist_push(&rest->as.list, argv[i]);
+            env_define(call_env, sym_name(params->items[rest_at + 1]), rest);
         }
         return eval(callee->as.fn.body, call_env);
     }
@@ -1270,6 +1637,14 @@ static int cmp_values(Value* a, Value* b) {
         return 0;
     }
     if (a->type == V_STR && b->type == V_STR) return strcmp(a->as.s, b->as.s);
+    if (a->type == V_BYTES && b->type == V_BYTES) {
+        size_t n = a->as.bytes.len < b->as.bytes.len ? a->as.bytes.len : b->as.bytes.len;
+        int r = memcmp(a->as.bytes.data, b->as.bytes.data, n);
+        if (r != 0) return r;
+        if (a->as.bytes.len < b->as.bytes.len) return -1;
+        if (a->as.bytes.len > b->as.bytes.len) return  1;
+        return 0;
+    }
     z_raise("cannot compare %s and %s", type_name(a), type_name(b));
     return 0;
 }
@@ -1363,6 +1738,7 @@ static Value* b_length(int argc, Value** argv, Env* e) {
     Value* v = argv[0];
     switch (v->type) {
         case V_STR:    return v_num((double)strlen(v->as.s));
+        case V_BYTES:  return v_num((double)v->as.bytes.len);
         case V_ARRAY:
         case V_LIST:   return v_num((double)v->as.list.len);
         case V_OBJECT: return v_num((double)v->as.obj.len);
@@ -1557,6 +1933,23 @@ static char* value_to_cstr(Value* v) {
             break;
         }
         case V_STR: sb_puts(&sb, v->as.s); break;
+        case V_BYTES: {
+            /* Show as #bytes:<len> [<hex prefix>] so prints stay readable
+             * for binary data. Full hex via (hex bytes). */
+            char head[64];
+            snprintf(head, sizeof(head), "#bytes:%zu ", v->as.bytes.len);
+            sb_puts(&sb, head);
+            sb_putc(&sb, '[');
+            size_t shown = v->as.bytes.len < 16 ? v->as.bytes.len : 16;
+            for (size_t i = 0; i < shown; i++) {
+                char hex[4]; snprintf(hex, sizeof(hex), "%02x", v->as.bytes.data[i]);
+                if (i) sb_putc(&sb, ' ');
+                sb_puts(&sb, hex);
+            }
+            if (v->as.bytes.len > shown) sb_puts(&sb, " ...");
+            sb_putc(&sb, ']');
+            break;
+        }
         case V_SYM: sb_puts(&sb, v->as.s); break;
         case V_ARRAY:
         case V_LIST:
@@ -2867,6 +3260,615 @@ static Value* b_random(int argc, Value** argv, Env* e) {
     (void)e; (void)argc; (void)argv;
     return v_num((double)rand() / (double)RAND_MAX);
 }
+
+/* (random-int lo hi)  inclusive both ends. */
+static Value* b_random_int(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("random-int", 2);
+    long lo = (long)num_arg(argv[0], "random-int");
+    long hi = (long)num_arg(argv[1], "random-int");
+    if (hi < lo) { long t = lo; lo = hi; hi = t; }
+    long span = hi - lo + 1;
+    return v_num((double)(lo + (long)((double)rand() / ((double)RAND_MAX + 1.0) * (double)span)));
+}
+
+/* (random-choice arr) — uniform random element. */
+static Value* b_random_choice(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("random-choice", 1);
+    if (argv[0]->type != V_ARRAY && argv[0]->type != V_LIST)
+        z_raise("random-choice: expected array");
+    if (argv[0]->as.list.len == 0) z_raise("random-choice: empty array");
+    size_t i = (size_t)((double)rand() / ((double)RAND_MAX + 1.0) * argv[0]->as.list.len);
+    return argv[0]->as.list.items[i];
+}
+
+/* (shuffle arr) — returns a Fisher-Yates shuffled COPY. */
+static Value* b_shuffle(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("shuffle", 1);
+    if (argv[0]->type != V_ARRAY && argv[0]->type != V_LIST)
+        z_raise("shuffle: expected array");
+    Value* out = v_array();
+    size_t n = argv[0]->as.list.len;
+    for (size_t i = 0; i < n; i++) vlist_push(&out->as.list, argv[0]->as.list.items[i]);
+    for (size_t i = n; i > 1; i--) {
+        size_t j = (size_t)((double)rand() / ((double)RAND_MAX + 1.0) * i);
+        Value* t = out->as.list.items[i-1];
+        out->as.list.items[i-1] = out->as.list.items[j];
+        out->as.list.items[j]   = t;
+    }
+    return out;
+}
+
+/* (random-seed n) — reset the RNG to deterministic state. */
+static Value* b_random_seed(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("random-seed", 1);
+    srand((unsigned)num_arg(argv[0], "random-seed"));
+    return v_null();
+}
+
+/* ---- math gap-fillers ---- */
+static Value* b_clamp(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("clamp", 3);
+    double x  = num_arg(argv[0], "clamp");
+    double lo = num_arg(argv[1], "clamp");
+    double hi = num_arg(argv[2], "clamp");
+    if (x < lo) x = lo;
+    if (x > hi) x = hi;
+    return v_num(x);
+}
+static Value* b_lerp(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("lerp", 3);
+    double a = num_arg(argv[0], "lerp");
+    double b = num_arg(argv[1], "lerp");
+    double t = num_arg(argv[2], "lerp");
+    return v_num(a + (b - a) * t);
+}
+static Value* b_is_nan(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("is-nan", 1);
+    if (argv[0]->type != V_NUM) return v_false();
+    return v_bool(argv[0]->as.n != argv[0]->as.n);
+}
+static Value* b_is_finite(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("is-finite", 1);
+    if (argv[0]->type != V_NUM) return v_false();
+    double n = argv[0]->as.n;
+    return v_bool(!(n != n) && n != (double)1.0/0.0 && n != -(double)1.0/0.0);
+}
+
+/* ---- format / printf ----
+ * Supports %s %d %f %.Nf %x %X %o %b (binary) %c %%
+ * Width and zero-pad flags are passed through to libc snprintf where
+ * possible; %b is handled by hand (libc doesn't ship it portably). */
+static Value* b_format(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1) z_raise("format: expected (format \"fmt\" args...)");
+    const char* fmt = str_arg(argv[0], "format");
+    StrBuf sb; sb_init(&sb);
+    int ai = 1;
+    for (const char* p = fmt; *p; ) {
+        if (*p != '%') { sb_putc(&sb, *p++); continue; }
+        if (p[1] == '%') { sb_putc(&sb, '%'); p += 2; continue; }
+        /* collect a full conversion specifier into spec[]: flags, width,
+         * .precision, then the conversion letter. */
+        char spec[24];
+        size_t si = 0;
+        spec[si++] = *p++;                     /* '%' */
+        while (*p && si < sizeof(spec) - 2
+               && !strchr("sdiufeEgGxXoOcb", *p)) spec[si++] = *p++;
+        if (!*p) z_raise("format: unterminated %% spec");
+        char conv = *p++;
+        spec[si++] = conv;
+        spec[si]   = 0;
+        if (ai >= argc) z_raise("format: not enough arguments for '%s'", spec);
+        Value* a = argv[ai++];
+        char buf[256];
+        if (conv == 's') {
+            char* s = value_to_cstr(a);
+            snprintf(buf, sizeof(buf), spec, s);
+            free(s);
+            sb_puts(&sb, buf);
+        } else if (conv == 'c') {
+            int ch = (a->type == V_NUM) ? (int)a->as.n
+                    : (a->type == V_STR && a->as.s[0]) ? (unsigned char)a->as.s[0] : 0;
+            snprintf(buf, sizeof(buf), spec, ch);
+            sb_puts(&sb, buf);
+        } else if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o') {
+            /* Use long for portable integer conversion. */
+            char lspec[32];
+            /* Inject 'l' before the conversion letter so spec is long-aware. */
+            size_t L = strlen(spec);
+            memcpy(lspec, spec, L - 1);
+            lspec[L - 1] = 'l';
+            lspec[L]     = conv;
+            lspec[L + 1] = 0;
+            long iv = (a->type == V_NUM) ? (long)a->as.n : 0;
+            snprintf(buf, sizeof(buf), lspec, iv);
+            sb_puts(&sb, buf);
+        } else if (conv == 'f' || conv == 'e' || conv == 'E'
+                || conv == 'g' || conv == 'G' || conv == 'u') {
+            double dv = (a->type == V_NUM) ? a->as.n : 0;
+            snprintf(buf, sizeof(buf), spec, dv);
+            sb_puts(&sb, buf);
+        } else if (conv == 'b') {
+            /* Custom binary formatter — libc doesn't always have %b. */
+            unsigned long iv = (a->type == V_NUM) ? (unsigned long)(long)a->as.n : 0;
+            char bin[65]; int bi = 0;
+            if (iv == 0) bin[bi++] = '0';
+            else for (unsigned long m = iv; m && bi < 64; m >>= 1)
+                     bin[bi++] = (m & 1) ? '1' : '0';
+            bin[bi] = 0;
+            /* reverse in place */
+            for (int i = 0, j = bi - 1; i < j; i++, j--) {
+                char t = bin[i]; bin[i] = bin[j]; bin[j] = t;
+            }
+            sb_puts(&sb, bin);
+        } else {
+            z_raise("format: unsupported conversion '%%%c'", conv);
+        }
+    }
+    if (!sb.data) { sb.data = (char*)calloc(1, 1); }
+    return v_str_take(sb.data);
+}
+
+/* ---- string helpers ---- */
+static Value* b_pad_left(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2 || argc > 3) z_raise("pad-left: (pad-left s n [ch])");
+    const char* s = str_arg(argv[0], "pad-left");
+    long n = (long)num_arg(argv[1], "pad-left");
+    char ch = (argc == 3) ? str_arg(argv[2], "pad-left")[0] : ' ';
+    long L = (long)strlen(s);
+    if (n <= L) return v_str(s);
+    char* out = (char*)malloc((size_t)n + 1);
+    long pad = n - L;
+    memset(out, ch, (size_t)pad);
+    memcpy(out + pad, s, (size_t)L);
+    out[n] = 0;
+    return v_str_take(out);
+}
+static Value* b_pad_right(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2 || argc > 3) z_raise("pad-right: (pad-right s n [ch])");
+    const char* s = str_arg(argv[0], "pad-right");
+    long n = (long)num_arg(argv[1], "pad-right");
+    char ch = (argc == 3) ? str_arg(argv[2], "pad-right")[0] : ' ';
+    long L = (long)strlen(s);
+    if (n <= L) return v_str(s);
+    char* out = (char*)malloc((size_t)n + 1);
+    memcpy(out, s, (size_t)L);
+    memset(out + L, ch, (size_t)(n - L));
+    out[n] = 0;
+    return v_str_take(out);
+}
+static Value* b_repeat(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("repeat", 2);
+    const char* s = str_arg(argv[0], "repeat");
+    long n = (long)num_arg(argv[1], "repeat");
+    if (n < 0) n = 0;
+    size_t L = strlen(s);
+    char* out = (char*)malloc(L * (size_t)n + 1);
+    for (long i = 0; i < n; i++) memcpy(out + i * L, s, L);
+    out[L * (size_t)n] = 0;
+    return v_str_take(out);
+}
+static Value* b_count_occurrences(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("count-occurrences", 2);
+    const char* hay  = str_arg(argv[0], "count-occurrences");
+    const char* need = str_arg(argv[1], "count-occurrences");
+    size_t nlen = strlen(need);
+    if (nlen == 0) return v_num(0);
+    long count = 0;
+    const char* p = hay;
+    while ((p = strstr(p, need))) { count++; p += nlen; }
+    return v_num((double)count);
+}
+static Value* b_slugify(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("slugify", 1);
+    const char* s = str_arg(argv[0], "slugify");
+    size_t L = strlen(s);
+    char* out = (char*)malloc(L + 1);
+    size_t k = 0;
+    int prev_dash = 1;   /* skip leading dashes */
+    for (size_t i = 0; i < L; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c >= 'A' && c <= 'Z')) { out[k++] = (char)(c | 0x20); prev_dash = 0; }
+        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { out[k++] = (char)c; prev_dash = 0; }
+        else if (!prev_dash) { out[k++] = '-'; prev_dash = 1; }
+    }
+    while (k > 0 && out[k-1] == '-') k--;   /* trim trailing dash */
+    out[k] = 0;
+    return v_str_take(out);
+}
+
+/* ---- array / object helpers ---- */
+static Value* b_merge(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc == 0) return v_object();
+    /* All-arrays → concat. All-objects → last-wins merge. Mixed → error. */
+    int all_arr = 1, all_obj = 1;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i]->type != V_ARRAY && argv[i]->type != V_LIST) all_arr = 0;
+        if (argv[i]->type != V_OBJECT) all_obj = 0;
+    }
+    if (all_arr) {
+        Value* out = v_array();
+        for (int i = 0; i < argc; i++)
+            for (size_t j = 0; j < argv[i]->as.list.len; j++)
+                vlist_push(&out->as.list, argv[i]->as.list.items[j]);
+        return out;
+    }
+    if (all_obj) {
+        Value* out = v_object();
+        for (int i = 0; i < argc; i++)
+            for (size_t j = 0; j < argv[i]->as.obj.len; j++)
+                obj_set(&out->as.obj, argv[i]->as.obj.keys[j], argv[i]->as.obj.vals[j]);
+        return out;
+    }
+    z_raise("merge: all arguments must be objects, or all arrays");
+    return v_null();
+}
+static Value* b_dissoc(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("dissoc", 2);
+    if (argv[0]->type != V_OBJECT) z_raise("dissoc: expected object");
+    const char* k = str_arg(argv[1], "dissoc");
+    Value* out = v_object();
+    for (size_t i = 0; i < argv[0]->as.obj.len; i++)
+        if (strcmp(argv[0]->as.obj.keys[i], k) != 0)
+            obj_set(&out->as.obj, argv[0]->as.obj.keys[i], argv[0]->as.obj.vals[i]);
+    return out;
+}
+static Value* b_select_keys(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("select-keys", 2);
+    if (argv[0]->type != V_OBJECT) z_raise("select-keys: expected object");
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST)
+        z_raise("select-keys: keys arg must be an array");
+    Value* out = v_object();
+    for (size_t i = 0; i < argv[1]->as.list.len; i++) {
+        Value* kv = argv[1]->as.list.items[i];
+        if (kv->type != V_STR) continue;
+        Value* v = obj_get(&argv[0]->as.obj, kv->as.s);
+        if (v) obj_set(&out->as.obj, kv->as.s, v);
+    }
+    return out;
+}
+static Value* b_update(int argc, Value** argv, Env* e) {
+    EXPECT_ARGC("update", 3);
+    if (argv[0]->type != V_OBJECT) z_raise("update: expected object");
+    const char* k = str_arg(argv[1], "update");
+    Value* fn = argv[2];
+    Value* old = obj_get(&argv[0]->as.obj, k);
+    Value* one[1] = { old ? old : v_null() };
+    Value* newv = apply(fn, 1, one, e);
+    Value* out = v_object();
+    int written = 0;
+    for (size_t i = 0; i < argv[0]->as.obj.len; i++) {
+        const char* ek = argv[0]->as.obj.keys[i];
+        if (strcmp(ek, k) == 0) { obj_set(&out->as.obj, k, newv); written = 1; }
+        else obj_set(&out->as.obj, ek, argv[0]->as.obj.vals[i]);
+    }
+    if (!written) obj_set(&out->as.obj, k, newv);
+    return out;
+}
+static Value* b_distinct(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("distinct", 1);
+    if (argv[0]->type != V_ARRAY && argv[0]->type != V_LIST)
+        z_raise("distinct: expected array");
+    Value* out = v_array();
+    for (size_t i = 0; i < argv[0]->as.list.len; i++) {
+        Value* v = argv[0]->as.list.items[i];
+        int dup = 0;
+        for (size_t j = 0; j < out->as.list.len; j++)
+            if (value_equals(out->as.list.items[j], v)) { dup = 1; break; }
+        if (!dup) vlist_push(&out->as.list, v);
+    }
+    return out;
+}
+static Value* b_zip(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 2) z_raise("zip: expected at least 2 arrays");
+    size_t shortest = (size_t)-1;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i]->type != V_ARRAY && argv[i]->type != V_LIST)
+            z_raise("zip: arg %d is %s", i+1, type_name(argv[i]));
+        if (argv[i]->as.list.len < shortest) shortest = argv[i]->as.list.len;
+    }
+    Value* out = v_array();
+    for (size_t i = 0; i < shortest; i++) {
+        Value* row = v_array();
+        for (int j = 0; j < argc; j++)
+            vlist_push(&row->as.list, argv[j]->as.list.items[i]);
+        vlist_push(&out->as.list, row);
+    }
+    return out;
+}
+static Value* b_take(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("take", 2);
+    long n = (long)num_arg(argv[0], "take");
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST) z_raise("take: expected array");
+    if (n < 0) n = 0;
+    if ((size_t)n > argv[1]->as.list.len) n = (long)argv[1]->as.list.len;
+    Value* out = v_array();
+    for (long i = 0; i < n; i++) vlist_push(&out->as.list, argv[1]->as.list.items[i]);
+    return out;
+}
+static Value* b_drop(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("drop", 2);
+    long n = (long)num_arg(argv[0], "drop");
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST) z_raise("drop: expected array");
+    if (n < 0) n = 0;
+    Value* out = v_array();
+    for (size_t i = (size_t)n; i < argv[1]->as.list.len; i++)
+        vlist_push(&out->as.list, argv[1]->as.list.items[i]);
+    return out;
+}
+static Value* b_take_while(int argc, Value** argv, Env* e) {
+    EXPECT_ARGC("take-while", 2);
+    Value* fn = argv[0];
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST) z_raise("take-while: expected array");
+    Value* out = v_array();
+    for (size_t i = 0; i < argv[1]->as.list.len; i++) {
+        Value* one[1] = { argv[1]->as.list.items[i] };
+        if (!is_truthy(apply(fn, 1, one, e))) break;
+        vlist_push(&out->as.list, argv[1]->as.list.items[i]);
+    }
+    return out;
+}
+static Value* b_drop_while(int argc, Value** argv, Env* e) {
+    EXPECT_ARGC("drop-while", 2);
+    Value* fn = argv[0];
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST) z_raise("drop-while: expected array");
+    Value* out = v_array();
+    int dropping = 1;
+    for (size_t i = 0; i < argv[1]->as.list.len; i++) {
+        if (dropping) {
+            Value* one[1] = { argv[1]->as.list.items[i] };
+            if (is_truthy(apply(fn, 1, one, e))) continue;
+            dropping = 0;
+        }
+        vlist_push(&out->as.list, argv[1]->as.list.items[i]);
+    }
+    return out;
+}
+static Value* b_group_by(int argc, Value** argv, Env* e) {
+    EXPECT_ARGC("group-by", 2);
+    Value* fn = argv[0];
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST) z_raise("group-by: expected array");
+    Value* out = v_object();
+    for (size_t i = 0; i < argv[1]->as.list.len; i++) {
+        Value* one[1] = { argv[1]->as.list.items[i] };
+        char* k = value_to_cstr(apply(fn, 1, one, e));
+        Value* bucket = obj_get(&out->as.obj, k);
+        if (!bucket) { bucket = v_array(); obj_set(&out->as.obj, k, bucket); }
+        vlist_push(&bucket->as.list, argv[1]->as.list.items[i]);
+        free(k);
+    }
+    return out;
+}
+
+/* ---- nested-path access ---- */
+
+/* Walk a path through nested objects + arrays. `path` is an array of
+ * string keys (for objects) or numbers (for arrays). Returns NULL if a
+ * key is missing or a number index is out of range. */
+static Value* zh_walk_path(Value* root, Value* path) {
+    if (path->type != V_ARRAY && path->type != V_LIST)
+        z_raise("path must be an array of keys/indices");
+    Value* cur = root;
+    for (size_t i = 0; i < path->as.list.len; i++) {
+        if (!cur) return NULL;
+        Value* k = path->as.list.items[i];
+        if (cur->type == V_OBJECT) {
+            if (k->type != V_STR) z_raise("path: object key must be a string");
+            cur = obj_get(&cur->as.obj, k->as.s);
+        } else if (cur->type == V_ARRAY || cur->type == V_LIST) {
+            if (k->type != V_NUM) z_raise("path: array index must be a number");
+            size_t idx = (size_t)k->as.n;
+            if (idx >= cur->as.list.len) return NULL;
+            cur = cur->as.list.items[idx];
+        } else {
+            return NULL;
+        }
+    }
+    return cur;
+}
+
+static Value* b_get_in(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("get-in", 2);
+    Value* r = zh_walk_path(argv[0], argv[1]);
+    return r ? r : v_null();
+}
+
+/* Recursive assoc-in: build a new collection at each level with the
+ * updated subtree, leaving the rest sharing structure. */
+static Value* zh_assoc_in(Value* root, Value** keys, size_t k_len, Value* val) {
+    if (k_len == 0) return val;
+    if (!root || root->type == V_NULL) {
+        /* Synthesize: if the next key is a string make an object, else an array. */
+        root = (keys[0]->type == V_STR) ? v_object() : v_array();
+    }
+    if (root->type == V_OBJECT) {
+        if (keys[0]->type != V_STR) z_raise("assoc-in: object key must be a string");
+        Value* out = v_object();
+        for (size_t i = 0; i < root->as.obj.len; i++)
+            obj_set(&out->as.obj, root->as.obj.keys[i], root->as.obj.vals[i]);
+        Value* sub = obj_get(&out->as.obj, keys[0]->as.s);
+        Value* nv  = zh_assoc_in(sub, keys + 1, k_len - 1, val);
+        obj_set(&out->as.obj, keys[0]->as.s, nv);
+        return out;
+    }
+    if (root->type == V_ARRAY || root->type == V_LIST) {
+        if (keys[0]->type != V_NUM) z_raise("assoc-in: array index must be a number");
+        size_t idx = (size_t)keys[0]->as.n;
+        Value* out = v_array();
+        for (size_t i = 0; i < root->as.list.len; i++)
+            vlist_push(&out->as.list, root->as.list.items[i]);
+        while (out->as.list.len <= idx) vlist_push(&out->as.list, v_null());
+        Value* sub = out->as.list.items[idx];
+        out->as.list.items[idx] = zh_assoc_in(sub, keys + 1, k_len - 1, val);
+        return out;
+    }
+    z_raise("assoc-in: cannot descend into %s", type_name(root));
+    return v_null();
+}
+
+static Value* b_assoc_in(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("assoc-in", 3);
+    if (argv[1]->type != V_ARRAY && argv[1]->type != V_LIST)
+        z_raise("assoc-in: path must be an array");
+    Value* path = argv[1];
+    return zh_assoc_in(argv[0], path->as.list.items, path->as.list.len, argv[2]);
+}
+
+static Value* b_update_in(int argc, Value** argv, Env* e) {
+    EXPECT_ARGC("update-in", 3);
+    Value* old = zh_walk_path(argv[0], argv[1]);
+    Value* one[1] = { old ? old : v_null() };
+    Value* newv = apply(argv[2], 1, one, e);
+    Value* path = argv[1];
+    return zh_assoc_in(argv[0], path->as.list.items, path->as.list.len, newv);
+}
+
+/* ---- date math ---- */
+
+/* (parse-date s [fmt]) — strptime with default ISO format. Returns ms-
+ * since-epoch (a number) so it composes with `timestamp` and `format-date`. */
+static Value* b_parse_date(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 2) z_raise("parse-date: (parse-date s [fmt])");
+    const char* s   = str_arg(argv[0], "parse-date");
+    const char* fmt = (argc == 2) ? str_arg(argv[1], "parse-date") : "%Y-%m-%d %H:%M:%S";
+    struct tm t = {0};
+#if defined(_WIN32)
+    /* Windows has no strptime. Punt: only ISO date forms supported there. */
+    int y, mo, d, h = 0, mi = 0, se = 0;
+    if (sscanf(s, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) < 3
+     && sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se) < 3
+     && sscanf(s, "%d-%d-%d", &y, &mo, &d) < 3)
+        z_raise("parse-date: cannot parse '%s' (Windows fallback)", s);
+    t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d;
+    t.tm_hour = h; t.tm_min = mi; t.tm_sec = se;
+    (void)fmt;
+#else
+    if (!strptime(s, fmt, &t)) z_raise("parse-date: cannot parse '%s' with '%s'", s, fmt);
+#endif
+    time_t epoch = mktime(&t);
+    return v_num((double)epoch * 1000.0);
+}
+
+/* (date+ ts amount unit) — adds amount of the given unit; ts and result
+ * are ms since epoch. unit ∈ {seconds, minutes, hours, days, weeks}. */
+static Value* b_date_plus(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("date+", 3);
+    double ts = num_arg(argv[0], "date+");
+    double amt = num_arg(argv[1], "date+");
+    const char* unit = str_arg(argv[2], "date+");
+    double mult = 0;
+    if      (strcmp(unit, "seconds") == 0 || strcmp(unit, "second") == 0) mult = 1000.0;
+    else if (strcmp(unit, "minutes") == 0 || strcmp(unit, "minute") == 0) mult = 60.0 * 1000.0;
+    else if (strcmp(unit, "hours")   == 0 || strcmp(unit, "hour")   == 0) mult = 3600.0 * 1000.0;
+    else if (strcmp(unit, "days")    == 0 || strcmp(unit, "day")    == 0) mult = 86400.0 * 1000.0;
+    else if (strcmp(unit, "weeks")   == 0 || strcmp(unit, "week")   == 0) mult = 7.0 * 86400.0 * 1000.0;
+    else if (strcmp(unit, "ms")      == 0 || strcmp(unit, "millis") == 0) mult = 1.0;
+    else z_raise("date+: unknown unit '%s'", unit);
+    return v_num(ts + amt * mult);
+}
+
+/* (date-diff a b unit) — returns (b - a) in the given unit (float). */
+static Value* b_date_diff(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("date-diff", 3);
+    double a = num_arg(argv[0], "date-diff");
+    double b = num_arg(argv[1], "date-diff");
+    const char* unit = str_arg(argv[2], "date-diff");
+    double diff_ms = b - a;
+    double div = 1.0;
+    if      (strcmp(unit, "seconds") == 0 || strcmp(unit, "second") == 0) div = 1000.0;
+    else if (strcmp(unit, "minutes") == 0 || strcmp(unit, "minute") == 0) div = 60.0 * 1000.0;
+    else if (strcmp(unit, "hours")   == 0 || strcmp(unit, "hour")   == 0) div = 3600.0 * 1000.0;
+    else if (strcmp(unit, "days")    == 0 || strcmp(unit, "day")    == 0) div = 86400.0 * 1000.0;
+    else if (strcmp(unit, "weeks")   == 0 || strcmp(unit, "week")   == 0) div = 7.0 * 86400.0 * 1000.0;
+    else if (strcmp(unit, "ms")      == 0 || strcmp(unit, "millis") == 0) div = 1.0;
+    else z_raise("date-diff: unknown unit '%s'", unit);
+    return v_num(diff_ms / div);
+}
+
+/* ---- CSV ---- */
+
+/* (csv:parse "a,b,c\n1,2,3") → [["a" "b" "c"] ["1" "2" "3"]]
+ * Handles quoted fields with embedded commas, quotes (doubled), CRLF. */
+static Value* b_csv_parse(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("csv:parse", 1);
+    const char* s = str_arg(argv[0], "csv:parse");
+    Value* rows = v_array();
+    Value* row  = v_array();
+    StrBuf field; sb_init(&field);
+    int in_quote = 0;
+    const char* p = s;
+    while (*p) {
+        char c = *p;
+        if (in_quote) {
+            if (c == '"' && p[1] == '"') { sb_putc(&field, '"'); p += 2; continue; }
+            if (c == '"') { in_quote = 0; p++; continue; }
+            sb_putc(&field, c); p++; continue;
+        }
+        if (c == '"') { in_quote = 1; p++; continue; }
+        if (c == ',') {
+            vlist_push(&row->as.list, v_str(field.data ? field.data : ""));
+            free(field.data); sb_init(&field);
+            p++; continue;
+        }
+        if (c == '\n' || c == '\r') {
+            vlist_push(&row->as.list, v_str(field.data ? field.data : ""));
+            free(field.data); sb_init(&field);
+            vlist_push(&rows->as.list, row);
+            row = v_array();
+            if (c == '\r' && p[1] == '\n') p += 2; else p++;
+            continue;
+        }
+        sb_putc(&field, c); p++;
+    }
+    /* Trailing field / row if file didn't end in newline. */
+    if (field.data || row->as.list.len > 0) {
+        vlist_push(&row->as.list, v_str(field.data ? field.data : ""));
+        vlist_push(&rows->as.list, row);
+    } else {
+        /* clean up the empty trailing row */
+    }
+    free(field.data);
+    return rows;
+}
+
+/* (csv:stringify [[..] [..] ...]) — round-trip back to CSV text. */
+static Value* b_csv_stringify(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("csv:stringify", 1);
+    if (argv[0]->type != V_ARRAY && argv[0]->type != V_LIST)
+        z_raise("csv:stringify: expected array of rows");
+    StrBuf sb; sb_init(&sb);
+    for (size_t r = 0; r < argv[0]->as.list.len; r++) {
+        Value* row = argv[0]->as.list.items[r];
+        if (row->type != V_ARRAY && row->type != V_LIST)
+            z_raise("csv:stringify: each row must be an array");
+        for (size_t c = 0; c < row->as.list.len; c++) {
+            if (c) sb_putc(&sb, ',');
+            char* cell = value_to_cstr(row->as.list.items[c]);
+            int needs_quote = 0;
+            for (char* q = cell; *q; q++)
+                if (*q == ',' || *q == '"' || *q == '\n' || *q == '\r') { needs_quote = 1; break; }
+            if (needs_quote) {
+                sb_putc(&sb, '"');
+                for (char* q = cell; *q; q++) {
+                    if (*q == '"') sb_putc(&sb, '"');
+                    sb_putc(&sb, *q);
+                }
+                sb_putc(&sb, '"');
+            } else {
+                sb_puts(&sb, cell);
+            }
+            free(cell);
+        }
+        sb_putc(&sb, '\n');
+    }
+    if (!sb.data) sb.data = (char*)calloc(1, 1);
+    return v_str_take(sb.data);
+}
 static Value* b_abs(int argc, Value** argv, Env* e) {
     (void)e; EXPECT_ARGC("abs", 1);
     return v_num(fabs(num_arg(argv[0], "abs")));
@@ -2899,6 +3901,179 @@ static Value* b_trunc(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("trunc
 static Value* b_sign(int argc, Value** argv, Env* e){(void)e;EXPECT_ARGC("sign",1);
     double x = num_arg(argv[0],"sign");
     return v_num(x > 0 ? 1.0 : (x < 0 ? -1.0 : 0.0));}
+
+/* ============================================================
+ * Bytes builtins. The V_BYTES type holds arbitrary binary data that may
+ * contain NUL — unlike strings which are NUL-terminated. Useful for file
+ * I/O, hashing, network protocols, anywhere strings would truncate.
+ * ============================================================ */
+
+/* (bytes x) — construct from a string (verbatim bytes), an array of
+ * numbers in 0..255, or another bytes (copy). */
+static Value* b_bytes(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("bytes", 1);
+    Value* v = argv[0];
+    if (v->type == V_STR) {
+        return v_bytes((const unsigned char*)v->as.s, strlen(v->as.s));
+    }
+    if (v->type == V_BYTES) {
+        return v_bytes(v->as.bytes.data, v->as.bytes.len);
+    }
+    if (v->type == V_ARRAY || v->type == V_LIST) {
+        size_t n = v->as.list.len;
+        unsigned char* buf = (unsigned char*)malloc(n + 1);
+        for (size_t i = 0; i < n; i++) {
+            Value* el = v->as.list.items[i];
+            if (el->type != V_NUM) { free(buf); z_raise("bytes: array elements must be numbers 0..255"); }
+            long b = (long)el->as.n;
+            if (b < 0 || b > 255) { free(buf); z_raise("bytes: value %ld out of range 0..255", b); }
+            buf[i] = (unsigned char)b;
+        }
+        buf[n] = 0;
+        return v_bytes_take(buf, n);
+    }
+    z_raise("bytes: expected string, bytes, or array of numbers");
+    return v_null();
+}
+
+/* (read-bytes path) — read whole file as bytes (handles NUL safely). */
+static Value* b_read_bytes(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("read-bytes", 1);
+    const char* path = str_arg(argv[0], "read-bytes");
+    FILE* f = fopen(path, "rb");
+    if (!f) z_raise("read-bytes: cannot open '%s': %s", path, strerror(errno));
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) { fclose(f); z_raise("read-bytes: ftell failed"); }
+    unsigned char* buf = (unsigned char*)malloc((size_t)n + 1);
+    size_t r = fread(buf, 1, (size_t)n, f);
+    buf[r] = 0;
+    fclose(f);
+    return v_bytes_take(buf, r);
+}
+
+/* (write-bytes path bytes-or-string) — writes raw bytes. Accepts a string
+ * too as a convenience (strlen used). */
+static Value* b_write_bytes(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("write-bytes", 2);
+    const char* path = str_arg(argv[0], "write-bytes");
+    Value* v = argv[1];
+    const unsigned char* data;
+    size_t n;
+    if (v->type == V_BYTES) { data = v->as.bytes.data; n = v->as.bytes.len; }
+    else if (v->type == V_STR) { data = (const unsigned char*)v->as.s; n = strlen(v->as.s); }
+    else z_raise("write-bytes: expected bytes or string");
+    FILE* f = fopen(path, "wb");
+    if (!f) z_raise("write-bytes: cannot open '%s': %s", path, strerror(errno));
+    fwrite(data, 1, n, f);
+    fclose(f);
+    return v_true();
+}
+
+/* (hex bytes-or-string) → lowercase hex string. */
+static Value* b_hex(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("hex", 1);
+    Value* v = argv[0];
+    const unsigned char* data;
+    size_t n;
+    if (v->type == V_BYTES) { data = v->as.bytes.data; n = v->as.bytes.len; }
+    else if (v->type == V_STR) { data = (const unsigned char*)v->as.s; n = strlen(v->as.s); }
+    else z_raise("hex: expected bytes or string");
+    char* out = (char*)malloc(2 * n + 1);
+    z_hex_encode(data, n, out);
+    return v_str_take(out);
+}
+
+/* (unhex "deadbeef") → bytes. Whitespace and colons in the input are
+ * ignored, so SSH-style "de:ad:be:ef" and pasted hex dumps both work. */
+static Value* b_unhex(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("unhex", 1);
+    const char* s = str_arg(argv[0], "unhex");
+    size_t L = strlen(s);
+    unsigned char* buf = (unsigned char*)malloc(L / 2 + 1);
+    size_t n = 0;
+    int hi = -1;
+    for (size_t i = 0; i < L; i++) {
+        char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ':') continue;
+        int d;
+        if      (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else { free(buf); z_raise("unhex: invalid character '%c'", c); }
+        if (hi < 0) hi = d;
+        else { buf[n++] = (unsigned char)((hi << 4) | d); hi = -1; }
+    }
+    if (hi >= 0) { free(buf); z_raise("unhex: odd number of hex digits"); }
+    buf[n] = 0;
+    return v_bytes_take(buf, n);
+}
+
+/* (bytes:get b i) → integer 0..255. */
+static Value* b_bytes_get(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("bytes:get", 2);
+    if (argv[0]->type != V_BYTES) z_raise("bytes:get: expected bytes");
+    long i = (long)num_arg(argv[1], "bytes:get");
+    if (i < 0 || (size_t)i >= argv[0]->as.bytes.len)
+        z_raise("bytes:get: index %ld out of range 0..%zu",
+                i, argv[0]->as.bytes.len);
+    return v_num((double)argv[0]->as.bytes.data[i]);
+}
+
+/* (bytes:slice b start [end]) — half-open range. */
+static Value* b_bytes_slice(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc != 2 && argc != 3) z_raise("bytes:slice: expected (bytes:slice b start [end])");
+    if (argv[0]->type != V_BYTES) z_raise("bytes:slice: expected bytes");
+    long n = (long)argv[0]->as.bytes.len;
+    long s = (long)num_arg(argv[1], "bytes:slice");
+    long en = argc == 3 ? (long)num_arg(argv[2], "bytes:slice") : n;
+    if (s < 0)   s = 0;
+    if (en > n)  en = n;
+    if (en < s)  en = s;
+    return v_bytes(argv[0]->as.bytes.data + s, (size_t)(en - s));
+}
+
+/* (bytes:concat b1 b2 ...) — variadic; accepts bytes or strings. */
+static Value* b_bytes_concat(int argc, Value** argv, Env* e) {
+    (void)e;
+    size_t total = 0;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i]->type == V_BYTES) total += argv[i]->as.bytes.len;
+        else if (argv[i]->type == V_STR) total += strlen(argv[i]->as.s);
+        else z_raise("bytes:concat: arg %d is %s", i+1, type_name(argv[i]));
+    }
+    unsigned char* buf = (unsigned char*)malloc(total + 1);
+    size_t off = 0;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i]->type == V_BYTES) {
+            memcpy(buf + off, argv[i]->as.bytes.data, argv[i]->as.bytes.len);
+            off += argv[i]->as.bytes.len;
+        } else {
+            size_t n = strlen(argv[i]->as.s);
+            memcpy(buf + off, argv[i]->as.s, n);
+            off += n;
+        }
+    }
+    buf[total] = 0;
+    return v_bytes_take(buf, total);
+}
+
+/* (string->bytes s) — explicit conversion (string bytes interpreted verbatim). */
+static Value* b_string_to_bytes(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("string->bytes", 1);
+    const char* s = str_arg(argv[0], "string->bytes");
+    return v_bytes((const unsigned char*)s, strlen(s));
+}
+
+/* (bytes->string b) — interpret bytes as a NUL-truncated string. Embedded
+ * NULs end the string early; round-tripping arbitrary bytes through string
+ * is lossy by design. */
+static Value* b_bytes_to_string(int argc, Value** argv, Env* e) {
+    (void)e; EXPECT_ARGC("bytes->string", 1);
+    if (argv[0]->type != V_BYTES) z_raise("bytes->string: expected bytes");
+    return v_str_take(str_dup_n((const char*)argv[0]->as.bytes.data,
+                                argv[0]->as.bytes.len));
+}
 
 /* ---------- file I/O ---------- */
 static Value* b_read(int argc, Value** argv, Env* e) {
@@ -3491,6 +4666,13 @@ static Value* b_import(int argc, Value** argv, Env* e) {
 #include "z_vision.h"
 #endif
 
+#ifdef Z_WITH_SQLITE
+#include "z_sqlite.h"
+#endif
+
+/* HTML/XML query module — small + dependency-free, so always on. */
+#include "z_html.h"
+
 /* ============================================================
  * (help) — cheat sheet printer
  * ============================================================ */
@@ -3525,9 +4707,15 @@ static const HelpTopic g_help_topics[] = {
     { "forms", "special forms",
       "  (do expr...)              sequential block; returns last value\n"
       "  (if cond then [else])     conditional\n"
+      "  (when cond body...)       run body if cond truthy, else null\n"
+      "  (unless cond body...)     run body if cond falsy, else null\n"
+      "  (cond (test body...) ...) first truthy test wins; `else` always fires\n"
+      "  (let ((n v) ...) body...) block-local bindings; each can use earlier ones\n"
+      "  (-> initial step ...)     thread-first: insert acc as arg 1 of each step\n"
+      "  (->> initial step ...)    thread-last:  insert acc as the final arg\n"
       "  (while cond body...)      loop while cond is truthy\n"
       "  (for var coll body...)    iterate over array/object\n"
-      "  (fn name (args) body...)  define named function\n"
+      "  (fn name (args) body...)  define named function (use `& rest` for variadic)\n"
       "  (lambda (args) body...)   anonymous function\n"
       "  (set name value)          define/assign variable\n"
       "  (try body (catch e ...))  catch runtime errors\n"
@@ -3554,6 +4742,16 @@ static const HelpTopic g_help_topics[] = {
       "  (reverse s-or-a)          reverse a string or array\n"
       "  (sort a [cmp])            sorted copy; cmp is (fn x y) → neg/0/pos\n"
       "  (chunk a n)               split into sub-arrays of size n\n"
+      "  (take n a)  (drop n a)    prefix / suffix\n"
+      "  (take-while p a)  (drop-while p a)\n"
+      "  (distinct a)              dedupe preserving order\n"
+      "  (zip a b ...)             collate by index → array of tuples\n"
+      "  (group-by f a)            object {key → [items]}\n"
+      "  (merge a b ...)           object union (later wins) or array concat\n"
+      "  (dissoc o k)              object without k\n"
+      "  (select-keys o ks)        project an object to given keys\n"
+      "  (update o k f)            apply f to o[k]\n"
+      "  (get-in o path)  (assoc-in o path v)  (update-in o path f)\n"
       "  (map f a)  (filter pred a)  (reduce f a [init])\n"
     },
     { "strings", "strings",
@@ -3564,6 +4762,9 @@ static const HelpTopic g_help_topics[] = {
       "  (replace s old new)\n"
       "  (substring s start [end])\n"
       "  (between s from to)       substring between markers, null if missing\n"
+      "  (format \"fmt\" args...)    printf-style: %s %d %f %.Nf %x %X %o %b %c\n"
+      "  (pad-left s n [ch])  (pad-right s n [ch])  (repeat s n)\n"
+      "  (count-occurrences hay needle)   (slugify s)\n"
       "  (levenshtein a b)         edit distance between two strings\n"
       "  (starts-with s prefix)    (ends-with s suffix)\n"
       "  (contains c x)            string / array / object key\n"
@@ -3589,8 +4790,12 @@ static const HelpTopic g_help_topics[] = {
       "  (sin x)  (cos x)  (tan x)         radians\n"
       "  (asin x)  (acos x)  (atan x)  (atan2 y x)\n"
       "  (sinh x)  (cosh x)  (tanh x)\n"
-      "  pi  e                              constants\n"
+      "  pi  e  inf  ninf  nan              constants\n"
+      "  (clamp x lo hi)  (lerp a b t)\n"
+      "  (is-nan x)  (is-finite x)\n"
       "  (random)                  0.0–1.0\n"
+      "  (random-int lo hi)        inclusive int\n"
+      "  (random-choice arr)  (shuffle arr)  (random-seed n)\n"
     },
     { "core", "core",
       "  (print ...)               write to stdout\n"
@@ -3599,15 +4804,27 @@ static const HelpTopic g_help_topics[] = {
       "  (sleep seconds)\n"
     },
     { "file", "file I/O",
-      "  (read path)               → string\n"
+      "  (read path)               → string (truncates at NUL — use read-bytes for binary)\n"
       "  (read-lines path)         → array of strings (CRLF/LF stripped)\n"
+      "  (read-bytes path)         → bytes value with full file contents\n"
       "  (write path s)\n"
+      "  (write-bytes path b)      write bytes (or string) verbatim\n"
       "  (append path s)\n"
       "  (delete path)\n"
       "  (list-dir path)           → array of entry names\n"
       "  (file-info path)          → { exists, is-dir, is-file, size, modified }\n"
       "  (copy-file src dst)\n"
       "  (move-file src dst)       rename, with cross-device fallback\n"
+    },
+    { "bytes", "binary data",
+      "  (bytes x)                 from string / bytes / array of 0..255 numbers\n"
+      "  (hex b)                   bytes (or string) → lowercase hex string\n"
+      "  (unhex s)                 hex (ignoring : / whitespace) → bytes\n"
+      "  (bytes:get b i)           byte at index i (0..255)\n"
+      "  (bytes:slice b start [end])  half-open slice → bytes\n"
+      "  (bytes:concat b ...)      variadic; accepts bytes or strings\n"
+      "  (string->bytes s) (bytes->string b)\n"
+      "  length / == / json:stringify all handle bytes; JSON encodes as hex.\n"
     },
     { "json", "JSON",
       "  (json:parse s)            → value\n"
@@ -3645,12 +4862,37 @@ static const HelpTopic g_help_topics[] = {
       "  (now)                     unix seconds, float\n"
       "  (timestamp)               unix seconds, int\n"
       "  (format-date ts [fmt])    strftime — %Y %m %d %H %M %S %A %B ...\n"
+      "  (parse-date s [fmt])      → ms-since-epoch\n"
+      "  (date+ ts amount unit)    seconds / minutes / hours / days / weeks / ms\n"
+      "  (date-diff a b unit)      → float in that unit\n"
+      "  (csv:parse s) (csv:stringify rows)\n"
       "  (env name)                getenv\n"
       "  (exec cmd)                → stdout+stderr as string\n"
       "  (run cmd)                 → { stdout, code }\n"
       "  (argv)                    args passed to the z program\n"
       "  (exit [code])\n"
       "  (import \"file.z\")         load and evaluate another file\n"
+    },
+    { "sqlite", "SQLite + KV (optional — build with SQLITE=1)",
+      "  (sqlite:open path)               → handle (\":memory:\" for in-RAM)\n"
+      "  (sqlite:exec  db sql [params])   run; → affected row count\n"
+      "  (sqlite:query db sql [params])   → array of row-objects (column-name keyed)\n"
+      "  (sqlite:close db)\n"
+      "  (sqlite:last-insert-id db)\n"
+      "  params: array (?,?,?) or object ({\"name\" v} → :name / @name)\n"
+      "  cell type ↔ z: NULL/INT/REAL/TEXT/BLOB ↔ null/number/string/bytes\n"
+      "  (kv:open path)  (kv:set s k v)  (kv:get s k)  (kv:del s k)\n"
+      "  (kv:keys s [prefix])             → array of strings, sorted\n"
+    },
+    { "html", "HTML / XML query (CSS-selector subset)",
+      "  (html:query selector html)   → array of outer-HTML strings\n"
+      "  (html:text  html-fragment)   → text content (tags stripped)\n"
+      "  (html:attr  name fragment)   → outermost-tag attribute, or null\n"
+      "  (xml:query  path xml)        → array of outer-XML strings; path = /a/b/c\n"
+      "  (xml:text   fragment)        → text content of xml\n"
+      "  (xml:attr   name fragment)   → outermost element's attribute\n"
+      "  selector syntax: tag .class #id [attr] [attr=v] [attr*=v] [attr^=v] [attr$=v]\n"
+      "                   `a b` descendant, `a > b` direct child\n"
     },
     { "vision", "computer vision (optional — build with VISION=1)",
       "  (vision:barcode path)     → array of { type, data }   needs zbarimg\n"
@@ -3688,19 +4930,22 @@ static Value* b_help(int argc, Value** argv, Env* env) {
     /* Only show the image section if it was actually compiled in. */
     int has_image  = env_lookup(env, "img:create")     != NULL;
     int has_vision = env_lookup(env, "vision:barcode") != NULL;
+    int has_sqlite = env_lookup(env, "sqlite:open")    != NULL;
 
     if (argc == 0) {
         printf("%sz language cheat sheet%s\n", HBOLD, HRST);
         printf("%s(help \"topic\") for one section · "
                "topics: forms arith cmp logic arrays strings regex math core "
-               "file json crypto url archive http system%s%s%s\n\n",
+               "file json crypto url archive http system html%s%s%s%s\n\n",
                HDIM,
                has_image  ? " image"  : "",
                has_vision ? " vision" : "",
+               has_sqlite ? " sqlite" : "",
                HRST);
         for (size_t i = 0; i < HELP_TOPIC_COUNT; i++) {
             if (strcmp(g_help_topics[i].key, "image")  == 0 && !has_image)  continue;
             if (strcmp(g_help_topics[i].key, "vision") == 0 && !has_vision) continue;
+            if (strcmp(g_help_topics[i].key, "sqlite") == 0 && !has_sqlite) continue;
             help_print_topic(&g_help_topics[i]);
         }
         return v_null();
@@ -3712,6 +4957,10 @@ static Value* b_help(int argc, Value** argv, Env* env) {
             if (strcmp(g_help_topics[i].key, want) == 0) {
                 if (strcmp(want, "image") == 0 && !has_image) {
                     printf("image module not compiled in — rebuild with IMAGE=1\n");
+                    return v_null();
+                }
+                if (strcmp(want, "sqlite") == 0 && !has_sqlite) {
+                    printf("sqlite module not compiled in — rebuild with SQLITE=1\n");
                     return v_null();
                 }
                 if (strcmp(want, "vision") == 0 && !has_vision) {
@@ -3799,6 +5048,48 @@ static void install_builtins(Env* env) {
     env_define(env, "ceil",   v_native(b_ceil));
     env_define(env, "random", v_native(b_random));
     env_define(env, "abs",    v_native(b_abs));
+    /* extra random */
+    env_define(env, "random-int",    v_native(b_random_int));
+    env_define(env, "random-choice", v_native(b_random_choice));
+    env_define(env, "shuffle",       v_native(b_shuffle));
+    env_define(env, "random-seed",   v_native(b_random_seed));
+    /* extra math */
+    env_define(env, "clamp",      v_native(b_clamp));
+    env_define(env, "lerp",       v_native(b_lerp));
+    env_define(env, "is-nan",     v_native(b_is_nan));
+    env_define(env, "is-finite",  v_native(b_is_finite));
+    env_define(env, "inf",        v_num((double)1.0/0.0));
+    env_define(env, "ninf",       v_num(-(double)1.0/0.0));
+    env_define(env, "nan",        v_num(((double)0.0)/((double)0.0)));
+    /* string helpers */
+    env_define(env, "format",            v_native(b_format));
+    env_define(env, "pad-left",          v_native(b_pad_left));
+    env_define(env, "pad-right",         v_native(b_pad_right));
+    env_define(env, "repeat",            v_native(b_repeat));
+    env_define(env, "count-occurrences", v_native(b_count_occurrences));
+    env_define(env, "slugify",           v_native(b_slugify));
+    /* collection helpers */
+    env_define(env, "merge",       v_native(b_merge));
+    env_define(env, "dissoc",      v_native(b_dissoc));
+    env_define(env, "select-keys", v_native(b_select_keys));
+    env_define(env, "update",      v_native(b_update));
+    env_define(env, "distinct",    v_native(b_distinct));
+    env_define(env, "zip",         v_native(b_zip));
+    env_define(env, "take",        v_native(b_take));
+    env_define(env, "drop",        v_native(b_drop));
+    env_define(env, "take-while",  v_native(b_take_while));
+    env_define(env, "drop-while",  v_native(b_drop_while));
+    env_define(env, "group-by",    v_native(b_group_by));
+    env_define(env, "get-in",      v_native(b_get_in));
+    env_define(env, "assoc-in",    v_native(b_assoc_in));
+    env_define(env, "update-in",   v_native(b_update_in));
+    /* date math */
+    env_define(env, "parse-date",  v_native(b_parse_date));
+    env_define(env, "date+",       v_native(b_date_plus));
+    env_define(env, "date-diff",   v_native(b_date_diff));
+    /* CSV */
+    env_define(env, "csv:parse",     v_native(b_csv_parse));
+    env_define(env, "csv:stringify", v_native(b_csv_stringify));
     /* trig */
     env_define(env, "sin",    v_native(b_sin));
     env_define(env, "cos",    v_native(b_cos));
@@ -3828,6 +5119,16 @@ static void install_builtins(Env* env) {
     env_define(env, "e",      v_num(2.71828182845904523536));
     /* file */
     env_define(env, "read",      v_native(b_read));
+    env_define(env, "read-bytes",   v_native(b_read_bytes));
+    env_define(env, "write-bytes",  v_native(b_write_bytes));
+    env_define(env, "bytes",        v_native(b_bytes));
+    env_define(env, "hex",          v_native(b_hex));
+    env_define(env, "unhex",        v_native(b_unhex));
+    env_define(env, "bytes:get",    v_native(b_bytes_get));
+    env_define(env, "bytes:slice",  v_native(b_bytes_slice));
+    env_define(env, "bytes:concat", v_native(b_bytes_concat));
+    env_define(env, "string->bytes", v_native(b_string_to_bytes));
+    env_define(env, "bytes->string", v_native(b_bytes_to_string));
     env_define(env, "read-lines", v_native(b_read_lines));
     env_define(env, "write",     v_native(b_write));
     env_define(env, "append",    v_native(b_append));
@@ -3885,6 +5186,10 @@ static void install_builtins(Env* env) {
 #ifdef Z_WITH_VISION
     install_vision_builtins(env);
 #endif
+#ifdef Z_WITH_SQLITE
+    install_sqlite_builtins(env);
+#endif
+    install_html_builtins(env);
 }
 
 /* ============================================================

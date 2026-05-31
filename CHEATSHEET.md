@@ -9,6 +9,13 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | --- | --- |
 | `do` | `(do (print "a") (print "b"))` |
 | `if` | `(if (> x 0) "pos" "neg")` |
+| `when` | `(when (> x 0) (print "+"))` |
+| `unless` | `(unless ok (print "fail"))` |
+| `cond` | `(cond ((> x 0) "+") ((< x 0) "-") (else "0"))` |
+| `let` | `(let ((x 10) (y 20)) (+ x y))` — `let*` semantics |
+| `->` | `(-> "  hi  " trim upper)` — thread-first |
+| `->>` | `(->> xs (map sq) (filter pos?))` — thread-last |
+| `fn` (variadic) | `(fn log (level & msgs) ...)` — `&` rest collects remaining args |
 | `while` | `(while (< i 10) (set i (+ i 1)))` |
 | `for` | `(for x (array 1 2 3) (print x))` |
 | `fn` | `(fn add (a b) (+ a b))` |
@@ -18,6 +25,16 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `quote` | `(quote (a b c))` |
 | `and` | `(and true false)` |
 | `or` | `(or false true)` |
+
+## Number literals
+
+| Form | Example | Notes |
+| --- | --- | --- |
+| Decimal | `42` · `3.14` · `1.5e-3` | IEEE-754 double |
+| Hex | `0xff` · `0XFF` · `0xdead_beef` | underscore allowed |
+| Binary | `0b1010` · `0b1111_0000` | underscore allowed |
+| Signed | `-0xff` · `+0b11` | sign attaches tightly |
+| Separators | `1_000_000` · `3.141_592` | `_` is ignored anywhere in a numeric literal |
 
 ## Arithmetic
 
@@ -65,6 +82,16 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `reverse` | `(reverse (array 1 2 3))` → `[3, 2, 1]`; also reverses strings |
 | `sort` | `(sort (array 3 1 2))` → `[1, 2, 3]`; pass `(fn x y)` cmp for custom order |
 | `chunk` | `(chunk (array 1 2 3 4 5) 2)` → `[[1, 2], [3, 4], [5]]` |
+| `take` / `drop` | `(take 3 arr)` · `(drop 3 arr)` |
+| `take-while` / `drop-while` | predicate-based prefix/suffix |
+| `distinct` | dedupe preserving order |
+| `zip` | `(zip (array 1 2 3) (array "a" "b" "c"))` |
+| `group-by` | `(group-by (lambda (n) (mod n 2)) arr)` → object |
+| `merge` | `(merge o1 o2)` (object) or `(merge a1 a2)` (array concat) |
+| `dissoc` | `(dissoc o "k")` — object minus key |
+| `select-keys` | `(select-keys o (array "a" "b"))` |
+| `update` | `(update o "n" (lambda (x) (+ x 1)))` |
+| `get-in` / `assoc-in` / `update-in` | nested path traversal: `(get-in o (array "user" "name"))` |
 | `map` | `(map (lambda (x) (* x x)) (array 1 2 3))` |
 | `filter` | `(filter (lambda (x) (> x 2)) (array 1 2 3))` |
 | `reduce` | `(reduce (lambda (a b) (+ a b)) (array 1 2 3) 0)` |
@@ -88,6 +115,11 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `ends-with` | `(ends-with "hello" "lo")` |
 | `contains` | `(contains "hello" "ell")` |
 | `index-of` | `(index-of "hello" "l")` |
+| `format` | `(format "%.2f%%" 42.5)` → `"42.50%"`; supports `%s %d %f %x %o %b %c %.Nf` |
+| `pad-left` / `pad-right` | `(pad-left "x" 5 "0")` → `"0000x"` |
+| `repeat` | `(repeat "ab" 3)` → `"ababab"` |
+| `count-occurrences` | `(count-occurrences "banana" "a")` → `3` |
+| `slugify` | `(slugify "Hello, World!")` → `"hello-world"` |
 | template string | `"hi ${name}"` |
 
 ## Regex
@@ -118,6 +150,10 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `sinh` / `cosh` / `tanh` | `(tanh 0)` → `0` |
 | `pi` / `e` | constants — `pi` ≈ `3.14159` |
 | `random` | `(random)` |
+| `random-int` / `random-choice` / `shuffle` / `random-seed` | `(random-int 1 6)` · `(random-choice arr)` · `(shuffle arr)` · `(random-seed 42)` |
+| `clamp` / `lerp` | `(clamp x 0 1)` · `(lerp 0 100 0.25)` |
+| `is-nan` / `is-finite` | bool predicates |
+| `inf` / `ninf` / `nan` | constants |
 
 ## Core
 
@@ -135,6 +171,12 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | --- | --- |
 | `read` | `(read "data.txt")` |
 | `read-lines` | `(read-lines "data.txt")` → array of lines |
+| `read-bytes` | `(read-bytes "image.png")` → bytes (binary-safe; no NUL truncation) |
+| `write-bytes` | `(write-bytes "out.bin" (bytes (array 0 1 2)))` |
+| `bytes` | `(bytes (array 0 1 2 255))` · `(bytes "abc")` |
+| `hex` / `unhex` | `(hex (bytes "z"))` → `"7a"` · `(unhex "de:ad")` → bytes |
+| `bytes:get/slice/concat` | byte indexing, half-open slice, variadic concat |
+| `string->bytes` / `bytes->string` | explicit conversion |
 | `write` | `(write "out.txt" "content")` |
 | `append` | `(append "log.txt" "a line")` |
 | `delete` | `(delete "tmp.txt")` |
@@ -241,6 +283,51 @@ Each function returns an array of detections. Empty array = no detections, not a
 | `vision:faces` | `(vision:faces "group.jpg")` → `[{x, y, width, height}]` | `python3` + `opencv-python` |
 | `vision:objects` | `(vision:objects "street.jpg")` → `[{class, confidence, x, y, width, height}]` | `python3` + `opencv-python` |
 | `vision:plate` | `(vision:plate "car.jpg")` → `[{plate, confidence}]` | `alpr` (OpenALPR) |
+
+## Date math
+
+| Command | Example |
+| --- | --- |
+| `parse-date` | `(parse-date "2024-05-12 10:00:00")` → ms-since-epoch |
+| `date+` | `(date+ ts 7 "days")` — units: ms / seconds / minutes / hours / days / weeks |
+| `date-diff` | `(date-diff a b "hours")` |
+| `format-date` | `(format-date (/ ts 1000) "%Y-%m-%d")` |
+
+## CSV
+
+| Command | Example |
+| --- | --- |
+| `csv:parse` | `(csv:parse "a,b\n\"with, comma\",3")` → `[["a","b"],["with, comma","3"]]` |
+| `csv:stringify` | `(csv:stringify rows)` — quotes fields that contain `, " \n` |
+
+## SQLite + KV (optional — build with `SQLITE=1`)
+
+| Command | Example |
+| --- | --- |
+| `sqlite:open` | `(sqlite:open ":memory:")` or `(sqlite:open "app.db")` |
+| `sqlite:exec` | `(sqlite:exec db "INSERT INTO t (x) VALUES (?)" (array 1))` → affected rows |
+| `sqlite:query` | `(sqlite:query db "SELECT * FROM t WHERE x > ?" (array 0))` → array of row-objects |
+| `sqlite:close` | `(sqlite:close db)` |
+| `sqlite:last-insert-id` | `(sqlite:last-insert-id db)` |
+| `kv:open` | `(kv:open "store.db")` — creates `kv (k, v)` schema on first open |
+| `kv:set` / `kv:get` / `kv:del` | `(kv:set s "k" 42)` · `(kv:get s "k")` · `(kv:del s "k")` |
+| `kv:keys` | `(kv:keys s)` · `(kv:keys s "prefix")` |
+
+Params: positional `?` (pass an array) or named `:foo` / `@foo` (pass an object).
+Column ↔ z mapping: NULL/INTEGER/REAL/TEXT/BLOB ↔ null/number/number/string/bytes.
+
+## HTML / XML query
+
+| Command | Example |
+| --- | --- |
+| `html:query` | `(html:query "li.a" html)` → array of outer-HTML strings |
+| `html:text` | `(html:text "<b>hi</b>")` → `"hi"` |
+| `html:attr` | `(html:attr "href" "<a href=\"x\">…</a>")` → `"x"` |
+| `xml:query` | `(xml:query "/root/user/name" xml)` |
+| `xml:text` | `(xml:text "<n>Ada</n>")` → `"Ada"` |
+| `xml:attr` | `(xml:attr "id" "<x id=\"5\"/>")` → `"5"` |
+
+Selector subset: `tag` · `.class` · `#id` · `[attr]` · `[attr=v]` · `[attr*=v]` · `[attr^=v]` · `[attr$=v]` · `a b` (descendant) · `a > b` (direct child).
 
 ## CLI flags
 
