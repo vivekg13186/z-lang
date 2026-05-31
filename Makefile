@@ -77,6 +77,15 @@ ifeq ($(SQLITE),1)
     LDLIBS += -lsqlite3
 endif
 
+# Enable with `make CV=1`. Embedded face detection — no extra libs, no
+# Python. Read a Haar cascade as a packed binary produced by
+# `tools/cascade_to_bin.py`. Inputs are PGM (use (img:grayscale) from
+# IMAGE=1 to get there from JPG/PNG).
+CV ?= 0
+ifeq ($(CV),1)
+    CFLAGS += -DZ_WITH_CV
+endif
+
 # Enable with `make OCR=1`. Links against libtesseract + libleptonica
 # (the tesseract C API). Replaces the python+pytesseract path.
 #   apt-get install libtesseract-dev libleptonica-dev tesseract-ocr
@@ -155,8 +164,9 @@ info:
 	@echo "VISION:   $(VISION)"
 	@echo "SQLITE:   $(SQLITE)"
 	@echo "OCR:      $(OCR)"
+	@echo "CV:       $(CV)"
 
-$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h
+$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
@@ -167,7 +177,7 @@ else
 	@ln -sf $(BIN) z
 endif
 
-$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h
+$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)

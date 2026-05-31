@@ -32,6 +32,10 @@ ifeq ($(SQLITE),1)
     CFLAGS  += -DZ_WITH_SQLITE
     LDFLAGS += -lsqlite3
 endif
+CV ?= 0
+ifeq ($(CV),1)
+    CFLAGS  += -DZ_WITH_CV
+endif
 OCR ?= 0
 ifeq ($(OCR),1)
     TESS_CFLAGS := $(shell pkg-config --cflags tesseract 2>/dev/null)
@@ -92,7 +96,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_html.h ../version.h
+$(TARGET): $(SRC) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_cv.h ../z_html.h ../version.h
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 clean:

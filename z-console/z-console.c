@@ -1116,6 +1116,10 @@ static const ZcExample Z_CONSOLE_EXAMPLES[] = {
     { "vision:barcode", "(vision:barcode \"receipt.png\")" },
     { "vision:faces", "(vision:faces \"group.jpg\")" },
     { "vision:objects", "(vision:objects \"street.jpg\")" },
+    { "cv:faces",      "(cv:faces \"in.pgm\" \"face.zhc\")" },
+    { "cv:read-pgm",   "(cv:read-pgm \"in.pgm\")" },
+    { "cv:save-pgm",   "(cv:save-pgm \"out.pgm\" w h bytes)" },
+    { "cv:image-info", "(cv:image-info \"in.pgm\")" },
     { "ocr:image",  "(ocr:image \"doc.png\")" },
     { "ocr:words",  "(ocr:words \"doc.png\" \"eng\")" },
     { "sqlite:open",   "(sqlite:open \":memory:\")" },
@@ -1362,6 +1366,12 @@ static const ZcSig Z_CONSOLE_SIGS[] = {
     { "vision:barcode", "path" },
     { "vision:faces",   "path" },
     { "vision:objects", "path" },
+
+    /* CV (optional — embedded Haar face detection) */
+    { "cv:faces",      "image-pgm cascade-zhc [opts]" },
+    { "cv:read-pgm",   "path" },
+    { "cv:save-pgm",   "path w h bytes" },
+    { "cv:image-info", "path" },
 
     /* OCR (optional) */
     { "ocr:image",  "path [lang]" },

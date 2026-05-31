@@ -368,6 +368,47 @@ Cell type ↔ z mapping is total: `NULL`/`INTEGER`/`REAL`/`TEXT`/`BLOB` ↔
 (kv:keys s "th")          ; → ["theme"]
 ```
 
+### Embedded face detection — `CV=1`
+
+Pure-C Haar cascade detector. No OpenCV link, no Python at runtime.
+Combine with `IMAGE=1` so any JPG/PNG can be funnelled through
+`(img:grayscale)` into the PGM format the detector reads.
+
+```sh
+make IMAGE=1 CV=1
+```
+
+One-time setup — grab a Haar cascade XML and convert it to z's compact
+binary format:
+
+```sh
+# any OpenCV cascade XML works; this is the frontalface one
+curl -L -o face.xml \
+  https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml
+python3 tools/cascade_to_bin.py face.xml face.zhc
+```
+
+Then in z:
+
+```lisp
+(img:grayscale "photo.jpg" "photo.pgm")            ; needs IMAGE=1
+(cv:faces "photo.pgm" "face.zhc")
+;  → [ { "x": 120, "y": 60, "width": 80, "height": 80, "score": 1.4 } ]
+
+;; tune via opts:
+(cv:faces "photo.pgm" "face.zhc"
+          (object "scale-factor" 1.15
+                  "min-size"     40
+                  "max-size"     400
+                  "merge"        true))
+```
+
+Cascade files are cached in-process by absolute path — calling
+`cv:faces` repeatedly with the same `.zhc` is cheap. Multi-scale
+detection with a 5% sliding step and non-max suppression (IoU > 0.3).
+Algorithm is standard Viola-Jones with per-window variance
+normalisation — same idea OpenCV uses, ~500 LOC.
+
 ### OCR — `OCR=1`
 
 Embeds tesseract via its C API (no Python required at runtime). Adds

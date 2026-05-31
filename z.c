@@ -4674,6 +4674,10 @@ static Value* b_import(int argc, Value** argv, Env* e) {
 #include "z_ocr.h"
 #endif
 
+#ifdef Z_WITH_CV
+#include "z_cv.h"
+#endif
+
 /* HTML/XML query module — small + dependency-free, so always on. */
 #include "z_html.h"
 
@@ -4876,6 +4880,17 @@ static const HelpTopic g_help_topics[] = {
       "  (argv)                    args passed to the z program\n"
       "  (exit [code])\n"
       "  (import \"file.z\")         load and evaluate another file\n"
+    },
+    { "cv", "embedded face detection (optional — build with CV=1)",
+      "  (cv:faces image-pgm cascade-zhc [opts])  → array of {x,y,width,height,score}\n"
+      "  (cv:read-pgm path)                       → { width, height, bytes }\n"
+      "  (cv:save-pgm path w h bytes)\n"
+      "  (cv:image-info path)                     → { width, height, format }\n"
+      "  Workflow:\n"
+      "    1. (img:grayscale \"in.jpg\" \"in.pgm\")     ; needs IMAGE=1\n"
+      "    2. python3 tools/cascade_to_bin.py haarcascade_frontalface_default.xml face.zhc\n"
+      "    3. (cv:faces \"in.pgm\" \"face.zhc\")\n"
+      "  opts: {scale-factor: 1.1, min-size: 0, max-size: 0, merge: true}\n"
     },
     { "ocr", "OCR (optional — build with OCR=1; links libtesseract)",
       "  (ocr:image path [lang])    → recognized text string\n"
@@ -5207,6 +5222,9 @@ static void install_builtins(Env* env) {
 #endif
 #ifdef Z_WITH_OCR
     install_ocr_builtins(env);
+#endif
+#ifdef Z_WITH_CV
+    install_cv_builtins(env);
 #endif
     install_html_builtins(env);
 }
