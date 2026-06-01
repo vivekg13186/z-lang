@@ -89,9 +89,14 @@ static int    zh_opt_bool(Value* opts, const char* k, int    def);
 static double zh_opt_num (Value* opts, const char* k, double def);
 static const char* zh_opt_str(Value* opts, const char* k, const char* def);
 
+/* zh_env_insecure() lives in z.c, declared before this header is included.
+ * Forward-declare it here so this header is self-contained. */
+static int zh_env_insecure(void);
+
 /* Apply common options + perform; returns the body as a z string. */
 static Value* zh_perform(CURL* curl, Value* opts, const char* fn) {
     long verify = zh_opt_bool(opts, "verify-ssl", 1);
+    if (zh_env_insecure()) verify = 0;   /* Z_HTTP_INSECURE=1 forces off */
     if (!verify) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
