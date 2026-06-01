@@ -93,32 +93,68 @@ topics only appear when their modules are compiled in.
 
 ## Fonts
 
-z-console renders all text in **Menlo** when available, falling back to
-raylib's default bitmap font otherwise (with a one-line stderr warning).
-Menlo is the monospace face that ships with macOS — pairing well with
-s-expressions because every glyph occupies the same width.
+z-console renders all text in **JetBrains Mono**, which is **embedded
+directly into the binary at build time** — a freshly-built `z-console`
+needs zero external font files. The embed step happens automatically
+when the Makefile sees `z-console/JetBrainsMono-Regular.ttf` (already
+present in this repo); `tools/embed_font.py` generates a C header
+(`zc_font_embed.h`) of the TTF bytes, which `z-console.c` then hands to
+raylib via `LoadFontFromMemory` on startup. Adds ~274 KB to the binary.
+
+JetBrains Mono is OFL-licensed (freely redistributable), designed
+specifically for code, and has a proper Microsoft/Unicode `cmap` table
+that raylib's `stb_truetype` parses reliably.
+
+**Install (recommended):**
+
+| OS              | How |
+| --------------- | --- |
+| macOS           | `brew install --cask font-jetbrains-mono` |
+| Debian / Ubuntu | `sudo apt-get install fonts-jetbrains-mono` |
+| Arch            | `sudo pacman -S ttf-jetbrains-mono` |
+| Fedora          | `sudo dnf install jetbrains-mono-fonts` |
+| Any OS          | download from [jetbrains.com/lp/mono](https://www.jetbrains.com/lp/mono/) and drop `JetBrainsMono-Regular.ttf` into `z-console/` |
 
 Resolution order at startup:
 
-1. `$Z_CONSOLE_FONT` — if set, must point to a TTF file.
-2. **Bundled** — `Menlo-Regular.ttf` (or `Menlo.ttf`) in the current
-   working directory, or right next to the `z-console` binary. Drop the
-   TTF into the `z-console/` folder and it's picked up automatically; ship
-   it alongside the binary the same way.
-3. System locations:
-   - macOS: `/System/Library/Fonts/Menlo.ttc` (the OS-bundled TrueType
-     collection), `/Library/Fonts/Menlo-Regular.ttf`, `~/Library/Fonts/…`
-   - Linux / Windows: `~/.local/share/fonts/Menlo-Regular.ttf`,
-     `~/.fonts/Menlo-Regular.ttf`, `C:\Windows\Fonts\Menlo-Regular.ttf`.
-4. Raylib's built-in pixel font.
+1. `$Z_CONSOLE_FONT` — explicit override; must point to a TTF.
+2. **Embedded** — the JetBrains Mono bytes baked into the binary at
+   build time (no file lookup, no install).
+3. **Bundled file** — `JetBrainsMono-Regular.ttf` (or `JetBrainsMonoNL-Regular.ttf`,
+   then legacy `Menlo-Regular.ttf` / `Menlo.ttf`) in the current working
+   directory, or next to the `z-console` binary. Useful for swapping
+   the font without rebuilding.
+4. **System locations** — JetBrains Mono first, then Menlo:
+   - macOS: `/Library/Fonts/JetBrainsMono-Regular.ttf`,
+     `~/Library/Fonts/...`, `/System/Library/Fonts/Menlo.ttc`
+   - Linux: `/usr/share/fonts/truetype/jetbrains-mono/...`,
+     `~/.local/share/fonts/...`, `~/.fonts/...`
+   - Windows: `C:\Windows\Fonts\JetBrainsMono-Regular.ttf`
+4. Raylib's built-in pixel font (with a clear stderr message
+   listing the install commands above).
 
-Menlo isn't redistributable as a separate package on non-Apple systems,
-so for Linux/Windows the simplest path is to copy `Menlo.ttc` /
-`Menlo-Regular.ttf` from a Mac (or use any other monospace TTF) and place
-it next to the binary:
+**Use a different monospace** — `Fira Code`, `Cascadia Code`,
+`DejaVu Sans Mono`, etc. all have proper Unicode cmaps:
 
+```sh
+Z_CONSOLE_FONT=~/Library/Fonts/FiraCode-Regular.ttf ./z-console
 ```
-Z_CONSOLE_FONT=~/Downloads/Menlo-Regular.ttf ./z-console
+
+**Troubleshooting** — if you see two `FILEIO: ... loaded successfully`
+lines back-to-back, your bundled TTF's `cmap` table has only Macintosh
+platform encodings — `stb_truetype` rejects those silently. This bites
+old extracted Menlo copies in particular. Fix on macOS:
+
+```sh
+pip install fonttools
+python3 tools/extract_menlo.py z-console/Menlo-Regular.ttf
+```
+
+…but the simpler answer is just to install JetBrains Mono via the table
+above.
+
+```sh
+Z_CONSOLE_FONT=~/Library/Fonts/JetBrainsMono-Regular.ttf ./z-console
 ```
 
 ## Builtins added on top of the standard z stdlib

@@ -85,22 +85,83 @@ CFLAGS  += $(RAYLIB_CFLAGS)
 LDFLAGS += $(RAYLIB_LIBS)
 
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_S),Darwin)
+    PLATFORM := macos
+    EXT      :=
     LDFLAGS += -framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL
 endif
 ifeq ($(UNAME_S),Linux)
+    PLATFORM := linux
+    EXT      :=
     LDFLAGS += -lm -lpthread -ldl -lrt -lX11
 endif
+ifneq (,$(findstring MINGW,$(UNAME_S)))
+    PLATFORM := windows
+    EXT      := .exe
+endif
+ifneq (,$(findstring MSYS,$(UNAME_S)))
+    PLATFORM := windows
+    EXT      := .exe
+endif
 
-.PHONY: all clean run
+# Normalise architecture tag to match the top-level Makefile's layout
+# (dist/macos_arm64, dist/linux_x86, dist/macos_x86, ...).
+ifeq ($(UNAME_M),x86_64)
+    ARCH := x86
+else ifeq ($(UNAME_M),amd64)
+    ARCH := x86
+else ifeq ($(UNAME_M),aarch64)
+    ARCH := arm64
+else ifeq ($(UNAME_M),arm64)
+    ARCH := arm64
+else ifeq ($(UNAME_M),i686)
+    ARCH := x86_32
+else
+    ARCH := $(UNAME_M)
+endif
 
-all: $(TARGET)
+DIST_DIR := ../dist/$(PLATFORM)_$(ARCH)
+DIST_BIN := $(DIST_DIR)/$(TARGET)$(EXT)
 
-$(TARGET): $(SRC) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_cv.h ../z_html.h ../version.h
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
+.PHONY: all clean run info
+
+all: $(TARGET) $(DIST_BIN)
+
+info:
+	@echo "platform: $(PLATFORM)"
+	@echo "arch:     $(ARCH)"
+	@echo "binary:   $(TARGET)$(EXT)"
+	@echo "dist:     $(DIST_BIN)"
+	@echo "CFLAGS:   $(CFLAGS)"
+	@echo "IMAGE:    $(IMAGE)"
+	@echo "VISION:   $(VISION)"
+	@echo "SQLITE:   $(SQLITE)"
+	@echo "OCR:      $(OCR)"
+	@echo "CV:       $(CV)"
+
+# Bundle JetBrainsMono-Regular.ttf into the binary by embedding its bytes
+# as a C array. Re-runs whenever the .ttf changes; produces a zero-length
+# stub when the .ttf is absent so the build still succeeds (and the loader
+# falls through to file-based lookup).
+FONT_TTF := JetBrainsMono-Regular.ttf
+FONT_H   := zc_font_embed.h
+
+$(FONT_H): $(wildcard $(FONT_TTF))
+	@python3 ../tools/embed_font.py $(FONT_TTF) $(FONT_H) zc_jbm_font
+
+$(TARGET): $(SRC) $(FONT_H) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_cv.h ../z_html.h ../version.h
+	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)$(EXT) $(LDFLAGS)
+
+# Stage the freshly built binary into ../dist/<platform>_<arch>/ so the
+# layout matches the top-level Makefile's output for `z` and `zide`.
+$(DIST_BIN): $(TARGET)
+	@mkdir -p $(DIST_DIR)
+	@cp $(TARGET)$(EXT) $(DIST_BIN)
+	@echo "→ $(DIST_BIN)"
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET)$(EXT) $(DIST_BIN) $(FONT_H)
 
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET)$(EXT)

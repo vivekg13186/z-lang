@@ -37,25 +37,50 @@
 #include <limits.h>
 
 /* ============================================================
- * Font loading — Menlo with graceful fallback to raylib default.
+ * Font loading — JetBrains Mono (default) with graceful fallback chain.
+ *
+ * JetBrains Mono is OFL-licensed and **embedded directly into the
+ * binary** at build time via tools/embed_font.py, so a freshly-built
+ * z-console needs zero external font files. The fallback chain below
+ * still exists so users can override with their own TTF, or so builds
+ * that skipped the embed step (e.g. size-conscious targets) still
+ * resolve to a system font.
  *
  * Order of attempts:
- *   1. $Z_CONSOLE_FONT     (explicit override, any TTF path)
- *   2. Bundled `Menlo-Regular.ttf` in cwd or next to the binary
- *   3. Common system locations for Menlo
- *   4. GetFontDefault()    (raylib's built-in bitmap font)
+ *   1. $Z_CONSOLE_FONT                  (explicit override, any TTF path)
+ *   2. EMBEDDED JetBrains Mono bytes    (zc_font_embed.h; ~274 KB inline)
+ *   3. Bundled font next to binary / cwd  (JetBrainsMono-Regular.ttf, then
+ *                                          legacy Menlo-Regular.ttf)
+ *   4. Common system locations
+ *   5. GetFontDefault()                 (raylib's built-in pixel font)
  *
- * Loaded once at size 64 with the full ASCII glyph set so any
- * FS_* size used by the UI scales cleanly via DrawTextEx.
+ * Loaded once at size 64 with the full ASCII glyph set so any FS_* size
+ * used by the UI scales cleanly via DrawTextEx.
  * ============================================================ */
 
-static const char* ZC_MENLO_CANDIDATES[] = {
-    /* macOS — Menlo ships with the OS. The .ttc is a TrueType collection;
-     * raylib's LoadFontEx can read individual styles from it. */
+#include "zc_font_embed.h"   /* defines zc_jbm_font[] and zc_jbm_font_len  */
+
+static const char* ZC_FONT_CANDIDATES[] = {
+    /* --- JetBrains Mono (default) --- */
+    /* macOS — Homebrew cask `font-jetbrains-mono` drops files under
+     * /Library/Fonts/ or ~/Library/Fonts/. */
+    "/Library/Fonts/JetBrainsMono-Regular.ttf",
+    "/Library/Fonts/JetBrainsMonoNL-Regular.ttf",
+    /* Debian/Ubuntu (apt: fonts-jetbrains-mono). */
+    "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+    "/usr/share/fonts/JetBrainsMono/JetBrainsMono-Regular.ttf",
+    /* Fedora/Arch and generic locations. */
+    "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
+    "/usr/local/share/fonts/JetBrainsMono-Regular.ttf",
+    /* Windows. */
+    "C:/Windows/Fonts/JetBrainsMono-Regular.ttf",
+
+    /* --- Menlo (legacy fallback; many of these fail to parse via raylib's
+     * stb_truetype because the cmap table is Mac-only — kept anyway so
+     * users who already had a working Menlo extraction keep working). --- */
     "/System/Library/Fonts/Menlo.ttc",
     "/Library/Fonts/Menlo-Regular.ttf",
     "/Library/Fonts/Menlo.ttf",
-    /* Linux / Windows usually need the TTF dropped into a user-fonts dir. */
     "/usr/share/fonts/truetype/Menlo-Regular.ttf",
     "/usr/local/share/fonts/Menlo-Regular.ttf",
     "C:/Windows/Fonts/Menlo-Regular.ttf",
@@ -74,18 +99,61 @@ static Font g_console_font;
 static int  g_console_font_loaded = 0;
 
 /* Try to load a font from `path`; on success, install it and return 1. */
+/* Try to load a font from `path`. Returns 1 on success; on failure prints
+ * a clear stderr line explaining what raylib actually did (file-loaded vs
+ * parse-failed), so the user isn't left wondering why a "loaded
+ * successfully" FILEIO log line still ends with a system-font fallback.
+ *
+ * If the extension-based LoadFontEx path fails (raylib's stb_truetype
+ * wrapper can be picky about Mac-flavoured TTFs where the first SFNT
+ * table is something nonstandard like FontForge's "FFTM"), we retry via
+ * LoadFontFromMemory with an explicit ".ttf" hint — that bypasses the
+ * extension sniff and feeds stb_truetype the bytes directly. */
 static int z_try_load_font(const char* path, int base_size) {
-    if (!path || !*path || !z_path_exists(path)) return 0;
+    if (!path || !*path) return 0;
+    if (!z_path_exists(path)) return 0;
+
     Font f = LoadFontEx(path, base_size, NULL, 0);
-    if (!f.texture.id) return 0;
-    g_console_font = f;
-    g_console_font_loaded = 1;
-    SetTextureFilter(g_console_font.texture, TEXTURE_FILTER_BILINEAR);
-    return 1;
+    if (f.texture.id) {
+        g_console_font = f;
+        g_console_font_loaded = 1;
+        SetTextureFilter(g_console_font.texture, TEXTURE_FILTER_BILINEAR);
+        return 1;
+    }
+
+    /* LoadFontEx failed despite the file existing on disk — try the
+     * in-memory loader with an explicit extension. */
+    int data_size = 0;
+    unsigned char* data = LoadFileData(path, &data_size);
+    if (data && data_size > 0) {
+        f = LoadFontFromMemory(".ttf", data, data_size, base_size, NULL, 0);
+        UnloadFileData(data);
+        if (f.texture.id) {
+            g_console_font = f;
+            g_console_font_loaded = 1;
+            SetTextureFilter(g_console_font.texture, TEXTURE_FILTER_BILINEAR);
+            return 1;
+        }
+    }
+
+    fprintf(stderr,
+        "z-console: '%s' loaded off disk but raylib's stb_truetype "
+        "couldn't parse it.\n"
+        "  Most common cause: the font's cmap table only has Macintosh\n"
+        "  platform encodings; stb_truetype only reads Microsoft/Unicode\n"
+        "  cmaps. Fix on macOS by extracting a clean copy from system Menlo:\n"
+        "      pip install fonttools\n"
+        "      python3 tools/extract_menlo.py %s\n"
+        "  On Linux/Windows, substitute any other monospace TTF\n"
+        "  (JetBrains Mono, Fira Code, DejaVu Sans Mono) — all have\n"
+        "  proper Unicode cmaps.\n"
+        "  Override at runtime with $Z_CONSOLE_FONT=/path/to/other.ttf\n",
+        path, path);
+    return 0;
 }
 
 /* Strip the trailing path component from `argv0` so we can look for a
- * bundled Menlo-Regular.ttf next to the executable. */
+ * bundled JetBrainsMono-Regular.ttf next to the executable. */
 static void z_dirname(const char* argv0, char* out, size_t out_sz) {
     if (!argv0 || !*argv0) { snprintf(out, out_sz, "."); return; }
     const char* slash = NULL;
@@ -108,9 +176,28 @@ static void load_console_font(const char* argv0) {
         fprintf(stderr, "z-console: could not load font from $Z_CONSOLE_FONT='%s'\n",
                 override);
     }
-    /* 2. Bundled Menlo next to the binary or in the current working dir. */
+
+    /* 2. Embedded JetBrains Mono — the bytes were baked into the binary
+     * by tools/embed_font.py at build time. zc_jbm_font_len is 0 if the
+     * embed step was skipped (e.g. someone built without the .ttf), in
+     * which case we silently fall through to file-based lookup. */
+    if (zc_jbm_font_len > 0) {
+        Font f = LoadFontFromMemory(".ttf",
+                                    (unsigned char*)zc_jbm_font,
+                                    (int)zc_jbm_font_len,
+                                    BASE_SIZE, NULL, 0);
+        if (f.texture.id) {
+            g_console_font = f;
+            g_console_font_loaded = 1;
+            SetTextureFilter(g_console_font.texture, TEXTURE_FILTER_BILINEAR);
+            return;
+        }
+    }
+
+    /* 3. Bundled font next to the binary or in the current working dir. */
     const char* bundled[] = {
-        "Menlo-Regular.ttf", "Menlo.ttf",
+        "JetBrainsMono-Regular.ttf", "JetBrainsMonoNL-Regular.ttf",
+        "Menlo-Regular.ttf", "Menlo.ttf",   /* legacy fallback */
         NULL
     };
     for (int i = 0; bundled[i]; i++) {
@@ -124,9 +211,9 @@ static void load_console_font(const char* argv0) {
         if (z_try_load_font(path, BASE_SIZE)) return;
     }
     /* 3. System paths. */
-    for (int i = 0; ZC_MENLO_CANDIDATES[i]; i++) {
-        if (!z_path_exists(ZC_MENLO_CANDIDATES[i])) continue;
-        Font f = LoadFontEx(ZC_MENLO_CANDIDATES[i], BASE_SIZE, NULL, 0);
+    for (int i = 0; ZC_FONT_CANDIDATES[i]; i++) {
+        if (!z_path_exists(ZC_FONT_CANDIDATES[i])) continue;
+        Font f = LoadFontEx(ZC_FONT_CANDIDATES[i], BASE_SIZE, NULL, 0);
         if (f.texture.id) {
             g_console_font = f;
             g_console_font_loaded = 1;
@@ -139,7 +226,10 @@ static void load_console_font(const char* argv0) {
     if (home) {
         char path[1024];
         const char* user_paths[] = {
-            "/Library/Fonts/Menlo-Regular.ttf",
+            "/Library/Fonts/JetBrainsMono-Regular.ttf",
+            "/.local/share/fonts/JetBrainsMono-Regular.ttf",
+            "/.fonts/JetBrainsMono-Regular.ttf",
+            "/Library/Fonts/Menlo-Regular.ttf",     /* legacy */
             "/.local/share/fonts/Menlo-Regular.ttf",
             "/.fonts/Menlo-Regular.ttf",
             NULL
@@ -160,9 +250,13 @@ static void load_console_font(const char* argv0) {
     g_console_font = GetFontDefault();
     g_console_font_loaded = 0;
     fprintf(stderr,
-            "z-console: Menlo not found, using default font. "
-            "Drop Menlo-Regular.ttf next to the z-console binary, install "
-            "Menlo, or set $Z_CONSOLE_FONT to a TTF path.\n");
+            "z-console: no usable TTF found, using raylib's default font.\n"
+            "  Quickest fix:\n"
+            "    macOS: brew install --cask font-jetbrains-mono\n"
+            "    apt:   sudo apt-get install fonts-jetbrains-mono\n"
+            "    or download from https://www.jetbrains.com/lp/mono/ and\n"
+            "    drop JetBrainsMono-Regular.ttf next to the z-console binary.\n"
+            "  Override at runtime with $Z_CONSOLE_FONT=/path/to/some.ttf\n");
 }
 
 /* ============================================================
@@ -1664,8 +1758,8 @@ int main(int argc, char** argv) {
     SetTargetFPS(60);
     SetExitKey(0);
     /* Must be called after InitWindow — needs an active GL context.
-     * argv[0] lets us look for a bundled Menlo-Regular.ttf next to the
-     * executable, not just in $PWD. */
+     * argv[0] lets us look for a bundled JetBrainsMono-Regular.ttf next
+     * to the executable, not just in $PWD. */
     load_console_font(argc > 0 ? argv[0] : NULL);
 
     char input_buf[INPUT_MAX] = {0};
@@ -2438,7 +2532,9 @@ int main(int argc, char** argv) {
         snprintf(status, sizeof(status),
                  " %d cells · last eval %.1f ms · %s · F1 help · Ctrl+S save · Ctrl+T theme · Ctrl+= / Ctrl+- font · Ctrl+L clear",
                  g_cell_count, last_eval_ms,
-                 g_console_font_loaded ? "Menlo" : "default font");
+                 g_console_font_loaded
+                     ? (zc_jbm_font_len > 0 ? "JetBrains Mono (embedded)" : "TTF")
+                     : "default font");
         zc_draw_text(status, 6, bar_y + 2, FS_TEXT - 2, TC.status_fg);
 
         /* Scroll-to-bottom floating button, visible only when the user has
