@@ -11,8 +11,13 @@ builds on **macOS**, **Linux**, and **Windows**.
 Ships as two binaries:
 
 - **`z`** — the interpreter; runs `.z` files and a basic REPL.
-- **`zide`** — an enhanced REPL with live syntax highlighting, Tab
-  autocompletion, and history (see [zide — enhanced REPL](#zide--enhanced-repl)).
+- **`zide`** — an enhanced terminal REPL with Jupyter-style numbered cells,
+  live syntax highlighting, bracket-match highlight, inline ghost-text
+  signatures, a dropdown Tab popup, history, and a `:save` command that
+  writes every cell to a `.z` file (see [zide — enhanced REPL](#zide--enhanced-repl)).
+- **`z-console`** — an optional raylib-based GUI REPL with the same
+  feature set plus inline images, themes, mouse selection, and a
+  Ctrl+S session save. Builds out of the `z-console/` folder.
 
 Source files use the `.z` extension.
 
@@ -102,12 +107,31 @@ z>
 
 ## zide — enhanced REPL
 
-`zide` is a richer interactive front end built on the same interpreter:
+`zide` is a richer interactive front end built on the same interpreter.
+Designed to feel like a notebook in your terminal:
 
+- **Numbered cells** — `In [N]>` prompts with `Out [N]=` results, a thin
+  divider between cells, and a `   ...   ` continuation prompt while a
+  multi-line expression is still open.
 - **Live syntax highlighting** as you type — comments, strings, numbers,
-  special forms, builtins, `${...}` interpolation, and brackets are colourised.
-- **Tab autocompletion** of special forms, builtins, and your own defined
-  variables (completes the common prefix, lists options when ambiguous).
+  special forms, builtins, `${...}` interpolation, and brackets.
+- **Bracket-match highlight** — when the caret sits next to a `(`, `)`,
+  `[`, or `]`, the bracket and its partner light up in inverse yellow.
+  Skips brackets inside strings and `;` comments.
+- **Inline signature ghost-text** — type `(funcname ` (any documented
+  builtin) and the rest of the signature plus its one-line description
+  is shown as dim ghost text after the caret, automatically disappearing
+  as you keep typing. Signatures are pulled from the same help topics
+  that `(help)` prints.
+- **Autocomplete popup** — Tab opens a dropdown beneath the prompt
+  listing every match (up to 7 visible rows) with each row's signature
+  and description. `↑`/`↓` to navigate, `Tab`/`Enter` to accept, `Esc`
+  or any other key cancels (the cancelling key is re-fed into the editor
+  so flow doesn't break).
+- **Save a session as a `.z` file** — type `:save` to dump every
+  committed cell to `~/.zide_session_YYYYMMDD_HHMMSS.z`, or
+  `:save path/to/file.z` to pick the path. The file is a normal `.z`
+  script: each cell separated by a blank line, with a header comment.
 - **Arrow-key history** (shared `~/.z_history`), in-line editing
   (`←`/`→`, `Home`/`End`, `Ctrl-A/E/K/L`), and bracket-aware multi-line input.
 - `help` / `?` for the cheat sheet, `:q` (or `:quit`) to exit.
@@ -117,21 +141,27 @@ make            # builds both z and zide
 ./zide          # launch it (root symlink → dist/<os>_<arch>/zide)
 ```
 
-Results are shown with a `=>` prefix. Like `z`, `zide program.z` will just
-run a file. When output isn't a terminal (piped/redirected) it degrades
-gracefully to plain, uncoloured behaviour.
+Like `z`, `zide program.z` runs a file and exits. When output isn't a
+terminal (piped/redirected) it degrades gracefully to plain, uncoloured
+behaviour.
 
 A quick session:
 
 ```
 $ ./zide
-zide — enhanced REPL for z
-syntax colouring · Tab completes · arrows for history · `help` for the cheat sheet · :q to quit
-zide> (set xs (array 1 2 3 4))
-=> [1, 2, 3, 4]
-zide> (map (lambda (n) (* n n)) xs)
-=> [1, 4, 9, 16]
-zide> :q
+zide 0.0.4 — enhanced REPL for z
+numbered cells · bracket match · Tab popup · :save [path] writes cells to .z · :q to quit
+─────────────────────────────────────────────────────────────────
+In [1]> (set xs (array 1 2 3 4))
+Out [1]= [1, 2, 3, 4]
+─────────────────────────────────────────────────────────────────
+In [2]> (map (lambda (n) (* n n)) xs)
+Out [2]= [1, 4, 9, 16]
+─────────────────────────────────────────────────────────────────
+In [3]> :save /tmp/squares.z
+; saved 2 cells → /tmp/squares.z
+─────────────────────────────────────────────────────────────────
+In [3]> :q
 bye!
 ```
 
@@ -147,8 +177,18 @@ The REPL has a built-in line editor with command history:
 | `Ctrl-A` / `Ctrl-E` | Same as Home / End                 |
 | `Ctrl-K`       | Delete from cursor to end of line       |
 | `Ctrl-L`       | Clear the screen                        |
+| `Tab`          | Autocomplete — opens a dropdown popup when ambiguous |
 | `Ctrl-C`       | Cancel the current line                 |
 | `Ctrl-D`       | Exit the REPL (on an empty line)        |
+
+REPL commands (typed at any prompt):
+
+| Command          | Action                                            |
+| ---------------- | ------------------------------------------------- |
+| `help` / `?`     | Show the cheat sheet (same as `(help)`)           |
+| `:save`          | Save every cell so far to `~/.zide_session_*.z`   |
+| `:save <path>`   | Same, to an explicit path                         |
+| `:q` / `:quit`   | Exit                                              |
 
 History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history` on Windows), up to 1000 entries.
 
@@ -157,7 +197,10 @@ History persists across sessions in `~/.z_history` (or `%USERPROFILE%\.z_history
 At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 `(help "topic")` for one section. Topics: `forms` `arith` `cmp` `logic`
 `arrays` `strings` `regex` `math` `core` `file` `json` `http` `system`
-(plus `image` when built with `IMAGE=1`).
+`html` (plus `image` when built with `IMAGE=1`, `vision` with `VISION=1`,
+`sqlite` with `SQLITE=1`, `ocr` with `OCR=1`, `cv` with `CV=1`). The
+http topic reflects how the build links — "via curl" by default,
+"via libcurl" when built with `LIBCURL=1`.
 
 ## What's implemented
 
@@ -166,7 +209,7 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **Syntax:** s-expressions, line comments with `;`, `[ ... ]` parsed the same as `( ... )`
 - **Number literals:** decimal (`42`, `3.14`, `1.5e-3`), hex (`0xff`, `0XFF`), binary (`0b1010`), all optionally signed; `_` may appear anywhere in a numeric literal as a separator (`0xdead_beef`, `1_000_000`)
 - **Special forms:** `do`, `if`, `when`, `unless`, `cond`, `let`, `->`, `->>`, `while`, `for`, `fn` (with `& rest` for variadic), `lambda`, `set`, `try`/`catch`, `quote`, `&&` / `and`, `||` / `or`
-- **Variables:** `set`, bare-symbol lookup, dotted access (`user.name`), `(get container key ...)` chain
+- **Variables:** `set`, bare-symbol lookup, dotted access (`user.name`), `(get container key ...)` chain. `set` also destructures: `(set (a b c) source)` pulls positionally when `source` is an array and by-key when it's an object.
 - **Arithmetic:** `+ - * / %` (and `+` doubles as string concatenation when the first arg is a string)
 - **Comparison:** `< > <= >= == !=`
 - **Logic:** `&&` `||` `!` (also as `and` / `or`)
@@ -190,6 +233,7 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **System:** `type`, `assert`, `sleep`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
 - **Errors:** `try`/`catch` with `setjmp`/`longjmp`
 - **Tail-call optimization:** calls in tail position — including self-recursion, mutual recursion through `if`/`cond`/`when`/`unless`/`let`/`do`/`and`/`or` — reuse the same C stack frame, so `(count-down 1_000_000)` and `(even? n)`/`(odd? n)` work for arbitrary depths.
+- **Optional modules:** `IMAGE=1` (img:* via ImageMagick), `VISION=1` (vision:* barcode/faces/objects shellouts), `SQLITE=1` (sqlite:* / kv:* — links libsqlite3), `OCR=1` (ocr:image / ocr:words — links libtesseract+leptonica), `CV=1` (`cv:faces` — embedded Haar-cascade detector in pure C, no Python at runtime), `LIBCURL=1` (link libcurl directly instead of shelling out to the `curl` binary). All flags compose: `make IMAGE=1 OCR=1 SQLITE=1 LIBCURL=1`.
 
 ## Quick taste
 
@@ -243,6 +287,32 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 ```
 
 Pattern syntax: `. * + ? ^ $ [class] [^class]` plus the shorthands `\d \w \s \D \W \S`.
+
+## Destructuring assignment
+
+`set` accepts a list of symbol slots as its target, so you can pull
+multiple values out of an array or object in one go — similar to
+Python's `a, b, c = obj`:
+
+```lisp
+; positional from an array — missing slots become null
+(set (a b c) (array 10 20 30))         ; a=10, b=20, c=30
+(set [x y z] (array 1 2 3))            ; same; [ ] form parses to ( )
+(set (p q r) (array 7 8))              ; p=7, q=8, r=null
+
+; by-key from an object — missing keys become null
+(set (name age role) (object "name" "Vivek" "age" 30 "role" "dev"))
+(set (h i missing)  (object "h" 1 "i" 2))   ; h=1, i=2, missing=null
+
+; combine with a function that returns multiple values via an array
+(fn min-max (xs) (array (reduce min xs) (reduce max xs)))
+(set (lo hi) (min-max (array 4 1 9 3 7)))    ; lo=1, hi=9
+```
+
+Every slot must be a symbol; the source must be an array or object —
+anything else raises `set: destructure source must be array or object`.
+Existing variables are rebound in place (same scoping rules as plain
+`(set name value)`).
 
 ## HTTP
 
