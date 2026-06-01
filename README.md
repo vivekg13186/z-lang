@@ -230,7 +230,7 @@ http topic reflects how the build links — "via curl" by default,
 - **Archives:** `zip:create`, `zip:extract` (need `zip`/`unzip`), `tar:create`, `tar:extract` (`gz`/`bz2`/`xz` compression)
 - **HTML / XML:** `html:query`, `html:text`, `html:attr`, `xml:query`, `xml:text`, `xml:attr` — built-in CSS-selector subset (`tag`, `.class`, `#id`, `[attr]`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant + direct-child combinators) and `/a/b/c`-style XPath
 - **Parsing / input:** `scanf` — `%d %f %s %c` and literal text → array of values; reads stdin when called with just a format. `input [prompt]` reads a line from stdin.
-- **HTTP:** `http:get url [headers] [opts]`, `http:post url body [headers] [opts]` — headers + opts are objects. `opts` keys: `verify-ssl`, `follow-redirects`, `max-redirects`, `timeout`, `user-agent`. Default build shells out to `curl` (bundled with Windows 10 1803+); build with `LIBCURL=1` to link libcurl directly and drop the binary dependency. Env `Z_HTTP_INSECURE=1` forces `verify-ssl` off globally.
+- **HTTP:** `http:get`, `http:post`, `http:put`, `http:delete`, `http:head` — all take `url [headers] [opts]`; `post`/`put` add a `body` arg (string, bytes, or object → JSON). `head` returns the raw response headers as a string. `opts` keys: `verify-ssl`, `follow-redirects`, `max-redirects`, `timeout`, `user-agent`. Default build shells out to `curl` (bundled with Windows 10 1803+); build with `LIBCURL=1` to link libcurl directly and drop the binary dependency. Env `Z_HTTP_INSECURE=1` forces `verify-ssl` off globally.
 - **Dates:** `now`, `timestamp`, `format-date`, `parse-date`, `date+`, `date-diff`
 - **CSV:** `csv:parse`, `csv:stringify` (handles quoted fields with embedded commas / quotes / CRLF)
 - **System:** `type`, `assert`, `sleep`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
@@ -347,6 +347,18 @@ Existing variables are rebound in place (same scoping rules as plain
                   "user-agent" "my-bot/1"))
 
 ; Env-var override: Z_HTTP_INSECURE=1 forces verify-ssl false everywhere.
+
+; PUT — same body semantics as POST (string / bytes / object → JSON).
+(http:put "https://api.example.com/users/42"
+          (object "name" "Vivek" "age" 30))
+
+; DELETE — no body, just url [headers] [opts].
+(http:delete "https://api.example.com/users/42"
+             (object "Authorization" "Bearer abc"))
+
+; HEAD — returns the raw response headers as a string (like `curl -I`).
+(http:head "https://example.com")
+;  → "HTTP/2 200\nServer: ...\nContent-Type: text/html; charset=UTF-8\n..."
 ```
 
 By default `http:*` shells out to the `curl` binary. POST bodies are written to a temp file and passed via `--data-binary @<file>`, so JSON with embedded quotes works on every shell; the temp file is deleted right after the call.

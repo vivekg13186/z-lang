@@ -198,5 +198,136 @@ static Value* b_http_post_libcurl(int argc, Value** argv, Env* e) {
     return r;
 }
 
+/* DELETE — like GET but with CUSTOMREQUEST=DELETE. */
+static Value* b_http_delete_libcurl(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 3)
+        z_raise("http:delete: expected (http:delete url [headers] [opts])");
+    const char* url = str_arg(argv[0], "http:delete");
+    Value* headers = argc >= 2 ? argv[1] : NULL;
+    Value* opts    = argc >= 3 ? argv[2] : NULL;
+
+    zh_global_init();
+    CURL* curl = curl_easy_init();
+    if (!curl) z_raise("http:delete: curl_easy_init failed");
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    struct curl_slist* hdrs = zh_build_headers(headers, "http:delete");
+    if (hdrs) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    Value* r = zh_perform(curl, opts, "http:delete");
+    if (hdrs) curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+    return r;
+}
+
+/* PUT — like POST but with CUSTOMREQUEST=PUT. */
+static Value* b_http_put_libcurl(int argc, Value** argv, Env* e) {
+    if (argc < 2 || argc > 4)
+        z_raise("http:put: expected (http:put url body [headers] [opts])");
+    const char* url = str_arg(argv[0], "http:put");
+    Value* body    = argv[1];
+    Value* headers = argc >= 3 ? argv[2] : NULL;
+    Value* opts    = argc >= 4 ? argv[3] : NULL;
+
+    const char* body_str;
+    Value* owned = NULL;
+    if (body->type == V_STR) body_str = body->as.s;
+    else if (body->type == V_BYTES) body_str = (const char*)body->as.bytes.data;
+    else {
+        Value* json_args[1] = { body };
+        owned = b_json_stringify(1, json_args, e);
+        body_str = owned->as.s;
+    }
+    size_t body_len = (body->type == V_BYTES) ? body->as.bytes.len : strlen(body_str);
+
+    zh_global_init();
+    CURL* curl = curl_easy_init();
+    if (!curl) z_raise("http:put: curl_easy_init failed");
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body_str);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
+
+    int have_ct = 0;
+    if (headers && headers->type == V_OBJECT) {
+        for (size_t i = 0; i < headers->as.obj.len; i++)
+            if (z_strcaseeq(headers->as.obj.keys[i], "Content-Type")) { have_ct = 1; break; }
+    }
+    struct curl_slist* hdrs = zh_build_headers(headers, "http:put");
+    if (!have_ct) {
+        const char* def = (body->type == V_STR)   ? "Content-Type: text/plain"
+                         : (body->type == V_BYTES) ? "Content-Type: application/octet-stream"
+                         :                           "Content-Type: application/json";
+        hdrs = curl_slist_append(hdrs, def);
+    }
+    if (hdrs) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+
+    Value* r = zh_perform(curl, opts, "http:put");
+    if (hdrs) curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+    return r;
+}
+
+/* HEAD — fetches headers only. Body callback is unused; instead a header
+ * callback accumulates the raw response headers as the returned string,
+ * so callers can grep them just like `curl -I` output. */
+static size_t zh_hdr_cb(char* ptr, size_t size, size_t nmemb, void* user) {
+    return zh_write_cb(ptr, size, nmemb, user);
+}
+static Value* b_http_head_libcurl(int argc, Value** argv, Env* e) {
+    (void)e;
+    if (argc < 1 || argc > 3)
+        z_raise("http:head: expected (http:head url [headers] [opts])");
+    const char* url = str_arg(argv[0], "http:head");
+    Value* headers = argc >= 2 ? argv[1] : NULL;
+    Value* opts    = argc >= 3 ? argv[2] : NULL;
+
+    zh_global_init();
+    CURL* curl = curl_easy_init();
+    if (!curl) z_raise("http:head: curl_easy_init failed");
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+
+    /* Apply our shared opts (verify-ssl, follow-redirects, timeout, UA). */
+    long verify = zh_opt_bool(opts, "verify-ssl", 1);
+    if (zh_env_insecure()) verify = 0;
+    if (!verify) {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    if (zh_opt_bool(opts, "follow-redirects", 0)) {
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        long max_red = (long)zh_opt_num(opts, "max-redirects", 10);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, max_red);
+    }
+    double timeout = zh_opt_num(opts, "timeout", 0);
+    if (timeout > 0) curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout);
+    char ua_buf[128];
+    snprintf(ua_buf, sizeof(ua_buf), "z/%s", Z_VERSION);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                     zh_opt_str(opts, "user-agent", ua_buf));
+
+    struct curl_slist* hdrs = zh_build_headers(headers, "http:head");
+    if (hdrs) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+
+    /* Capture response headers (not the body) into the returned string. */
+    ZhBuf out = {0};
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, zh_hdr_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA,     &out);
+
+    CURLcode rc = curl_easy_perform(curl);
+    if (hdrs) curl_slist_free_all(hdrs);
+    if (rc != CURLE_OK) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "http:head: %s", curl_easy_strerror(rc));
+        free(out.data);
+        curl_easy_cleanup(curl);
+        z_raise("%s", msg);
+    }
+    curl_easy_cleanup(curl);
+    if (!out.data) out.data = (char*)calloc(1, 1);
+    return v_str_take(out.data);
+}
+
 #endif /* Z_WITH_LIBCURL */
 #endif /* Z_HTTP_H_INCLUDED */

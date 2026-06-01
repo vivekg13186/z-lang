@@ -4664,24 +4664,44 @@ static void http_emit_opts(StrBuf* sb, Value* opts) {
     }
 }
 
-/* (http:get url [headers] [opts]) — shell-out implementation */
-static Value* b_http_get_shell(int argc, Value** argv, Env* e) {
+/* GET / DELETE / HEAD share a no-body shell-out shape. `method` is the
+ * HTTP verb; when NULL, curl uses its default (GET). `head_only` switches
+ * curl into "headers only" mode (-I) which is how HEAD requests are
+ * issued. */
+static Value* http_no_body_shell(const char* method, int head_only,
+                                 int argc, Value** argv, Env* e, const char* fn) {
     if (argc < 1 || argc > 3)
-        z_raise("http:get: expected (http:get url [headers] [opts])");
-    const char* url = str_arg(argv[0], "http:get");
+        z_raise("%s: expected (%s url [headers] [opts])", fn, fn);
+    const char* url = str_arg(argv[0], fn);
     Value* headers = argc >= 2 ? argv[1] : NULL;
     Value* opts    = argc >= 3 ? argv[2] : NULL;
 
     StrBuf sb; sb_init(&sb);
     sb_puts(&sb, "curl -sS");
+    if (head_only)   sb_puts(&sb, " -I");
+    if (method && !head_only) {
+        sb_puts(&sb, " -X ");
+        sb_puts(&sb, method);
+    }
     http_emit_opts(&sb, opts);
-    http_emit_headers(&sb, headers, "http:get");
+    http_emit_headers(&sb, headers, fn);
     sb_puts(&sb, " \"");
     sb_puts(&sb, url);
     sb_putc(&sb, '"');
 
     Value* cmd_arg[1] = { v_str_take(sb.data) };
     return b_exec(1, cmd_arg, e);
+}
+
+/* (http:get url [headers] [opts]) — shell-out implementation */
+static Value* b_http_get_shell(int argc, Value** argv, Env* e) {
+    return http_no_body_shell(NULL, 0, argc, argv, e, "http:get");
+}
+static Value* b_http_delete_shell(int argc, Value** argv, Env* e) {
+    return http_no_body_shell("DELETE", 0, argc, argv, e, "http:delete");
+}
+static Value* b_http_head_shell(int argc, Value** argv, Env* e) {
+    return http_no_body_shell("HEAD", 1, argc, argv, e, "http:head");
 }
 
 /* Pick a directory for short-lived temp files. Honours $TMPDIR / %TEMP%. */
@@ -4696,17 +4716,20 @@ static const char* z_tmp_dir(void) {
 #endif
 }
 
-/* (http:post url body [headers] [opts]) — shell-out implementation
- *   body string  → sent verbatim; default Content-Type: text/plain
- *   body object  → JSON-stringified; default Content-Type: application/json
- * User-provided Content-Type in headers wins.
+/* POST / PUT share a with-body shell-out shape — the only difference is
+ * the verb. Body is written to a temp file and passed via --data-binary
+ * @<file>, so arbitrary content (JSON with quotes, raw bytes) works on
+ * every shell.
  *
- * Body is written to a temp file and passed to curl via --data-binary @<file>,
- * so arbitrary content (JSON with quotes, binary data) works on every shell. */
-static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
+ *   body string  → sent verbatim; default Content-Type: text/plain
+ *   body bytes   → sent verbatim; default Content-Type: application/octet-stream
+ *   body object  → JSON-stringified; default Content-Type: application/json
+ * User-supplied Content-Type in the headers always wins. */
+static Value* http_with_body_shell(const char* method,
+                                   int argc, Value** argv, Env* e, const char* fn) {
     if (argc < 2 || argc > 4)
-        z_raise("http:post: expected (http:post url body [headers] [opts])");
-    const char* url = str_arg(argv[0], "http:post");
+        z_raise("%s: expected (%s url body [headers] [opts])", fn, fn);
+    const char* url = str_arg(argv[0], fn);
     Value* body    = argv[1];
     Value* headers = argc >= 3 ? argv[2] : NULL;
     Value* opts    = argc >= 4 ? argv[3] : NULL;
@@ -4733,12 +4756,13 @@ static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
     snprintf(tmp_path, sizeof(tmp_path), "%s/z_http_body_%d_%d.tmp",
              z_tmp_dir(), (int)time(NULL), rand());
     FILE* tf = fopen(tmp_path, "wb");
-    if (!tf) z_raise("http:post: cannot create temp file '%s'", tmp_path);
+    if (!tf) z_raise("%s: cannot create temp file '%s'", fn, tmp_path);
     if (body_len) fwrite(body_str, 1, body_len, tf);
     fclose(tf);
 
     StrBuf sb; sb_init(&sb);
-    sb_puts(&sb, "curl -sS -X POST");
+    sb_puts(&sb, "curl -sS -X ");
+    sb_puts(&sb, method);
     http_emit_opts(&sb, opts);
 
     /* Default Content-Type only if the user didn't supply one. */
@@ -4750,7 +4774,7 @@ static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
         else
             sb_puts(&sb, " -H \"Content-Type: application/json\"");
     }
-    http_emit_headers(&sb, headers, "http:post");
+    http_emit_headers(&sb, headers, fn);
 
     sb_puts(&sb, " --data-binary @\"");
     sb_puts(&sb, tmp_path);
@@ -4762,6 +4786,13 @@ static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
     Value* result = b_exec(1, cmd_arg, e);
     remove(tmp_path);
     return result;
+}
+
+static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
+    return http_with_body_shell("POST", argc, argv, e, "http:post");
+}
+static Value* b_http_put_shell(int argc, Value** argv, Env* e) {
+    return http_with_body_shell("PUT", argc, argv, e, "http:put");
 }
 
 /* Optional libcurl path — defines b_http_get_libcurl / b_http_post_libcurl
@@ -4782,6 +4813,27 @@ static Value* b_http_post(int argc, Value** argv, Env* e) {
     return b_http_post_libcurl(argc, argv, e);
 #else
     return b_http_post_shell(argc, argv, e);
+#endif
+}
+static Value* b_http_put(int argc, Value** argv, Env* e) {
+#ifdef Z_WITH_LIBCURL
+    return b_http_put_libcurl(argc, argv, e);
+#else
+    return b_http_put_shell(argc, argv, e);
+#endif
+}
+static Value* b_http_delete(int argc, Value** argv, Env* e) {
+#ifdef Z_WITH_LIBCURL
+    return b_http_delete_libcurl(argc, argv, e);
+#else
+    return b_http_delete_shell(argc, argv, e);
+#endif
+}
+static Value* b_http_head(int argc, Value** argv, Env* e) {
+#ifdef Z_WITH_LIBCURL
+    return b_http_head_libcurl(argc, argv, e);
+#else
+    return b_http_head_shell(argc, argv, e);
 #endif
 }
 
@@ -5021,8 +5073,11 @@ static const HelpTopic g_help_topics[] = {
 #else
       "HTTP (shells out to curl; build with LIBCURL=1 to link libcurl)",
 #endif
-      "  (http:get  url [headers] [opts])       → response body\n"
-      "  (http:post url body [headers] [opts])  body: string|bytes|object\n"
+      "  (http:get    url [headers] [opts])       → response body\n"
+      "  (http:post   url body [headers] [opts])  body: string|bytes|object\n"
+      "  (http:put    url body [headers] [opts])  same body semantics as post\n"
+      "  (http:delete url [headers] [opts])\n"
+      "  (http:head   url [headers] [opts])       → response headers as a string\n"
       "  headers: object, e.g. (object \"Authorization\" \"Bearer ...\")\n"
       "  opts:    object — recognised keys:\n"
       "    verify-ssl       bool (default true)  set false to skip cert check\n"
@@ -5359,8 +5414,11 @@ static void install_builtins(Env* env) {
     env_define(env, "scanf",         v_native(b_scanf));
     env_define(env, "input",         v_native(b_input));
     /* http */
-    env_define(env, "http:get",  v_native(b_http_get));
-    env_define(env, "http:post", v_native(b_http_post));
+    env_define(env, "http:get",    v_native(b_http_get));
+    env_define(env, "http:post",   v_native(b_http_post));
+    env_define(env, "http:put",    v_native(b_http_put));
+    env_define(env, "http:delete", v_native(b_http_delete));
+    env_define(env, "http:head",   v_native(b_http_head));
     /* system / time */
     env_define(env, "now",         v_native(b_now));
     env_define(env, "timestamp",   v_native(b_timestamp));

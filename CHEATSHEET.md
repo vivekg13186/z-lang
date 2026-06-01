@@ -241,6 +241,9 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `http:get` + opts | `(http:get url null (object "verify-ssl" false "timeout" 10))` |
 | `http:post` | `(http:post url (object "k" "v"))` |
 | `http:post` + headers | `(http:post url body (object "X-Trace" "abc"))` |
+| `http:put` | `(http:put url (object "k" "v"))` |
+| `http:delete` | `(http:delete url)` |
+| `http:head` | `(http:head url)` → response headers as string |
 | ignore SSL globally | `Z_HTTP_INSECURE=1 z script.z` |
 | link libcurl | `make LIBCURL=1` — no `curl` binary needed |
 
