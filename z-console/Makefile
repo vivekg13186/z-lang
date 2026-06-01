@@ -78,6 +78,25 @@ ifeq ($(OCR),1)
     LDFLAGS += $(TESS_LIBS)
 endif
 
+# LIBCURL=1 — link libcurl instead of shelling out to the `curl` binary.
+# Same pkg-config → brew → bare -lcurl discovery as the top-level Makefile.
+LIBCURL ?= 0
+ifeq ($(LIBCURL),1)
+    CURL_CFLAGS := $(shell pkg-config --cflags libcurl 2>/dev/null)
+    CURL_LIBS   := $(shell pkg-config --libs   libcurl 2>/dev/null)
+    ifeq ($(strip $(CURL_CFLAGS) $(CURL_LIBS)),)
+        CURL_PREFIX := $(shell brew --prefix curl 2>/dev/null)
+        ifneq ($(CURL_PREFIX),)
+            CURL_CFLAGS := -I$(CURL_PREFIX)/include
+            CURL_LIBS   := -L$(CURL_PREFIX)/lib -lcurl
+        else
+            CURL_LIBS   := -lcurl
+        endif
+    endif
+    CFLAGS  += -DZ_WITH_LIBCURL $(CURL_CFLAGS)
+    LDFLAGS += $(CURL_LIBS)
+endif
+
 # raylib via pkg-config
 RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
 RAYLIB_LIBS   := $(shell pkg-config --libs   raylib 2>/dev/null)
@@ -139,6 +158,7 @@ info:
 	@echo "SQLITE:   $(SQLITE)"
 	@echo "OCR:      $(OCR)"
 	@echo "CV:       $(CV)"
+	@echo "LIBCURL:  $(LIBCURL)"
 
 # Bundle JetBrainsMono-Regular.ttf into the binary by embedding its bytes
 # as a C array. Re-runs whenever the .ttf changes; produces a zero-length
@@ -150,7 +170,7 @@ FONT_H   := zc_font_embed.h
 $(FONT_H): $(wildcard $(FONT_TTF))
 	@python3 ../tools/embed_font.py $(FONT_TTF) $(FONT_H) zc_jbm_font
 
-$(TARGET): $(SRC) $(FONT_H) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_cv.h ../z_html.h ../version.h
+$(TARGET): $(SRC) $(FONT_H) ../z.c ../z_img.h ../z_vision.h ../z_sqlite.h ../z_ocr.h ../z_cv.h ../z_html.h ../z_http.h ../version.h
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)$(EXT) $(LDFLAGS)
 
 # Stage the freshly built binary into ../dist/<platform>_<arch>/ so the

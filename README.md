@@ -184,7 +184,7 @@ At the REPL, type `help` (or `?`) to see a categorized cheat sheet, or
 - **Archives:** `zip:create`, `zip:extract` (need `zip`/`unzip`), `tar:create`, `tar:extract` (`gz`/`bz2`/`xz` compression)
 - **HTML / XML:** `html:query`, `html:text`, `html:attr`, `xml:query`, `xml:text`, `xml:attr` — built-in CSS-selector subset (`tag`, `.class`, `#id`, `[attr]`, `[attr=v]`, `[attr*=v]`, `[attr^=v]`, `[attr$=v]`, descendant + direct-child combinators) and `/a/b/c`-style XPath
 - **Parsing / input:** `scanf` — `%d %f %s %c` and literal text → array of values; reads stdin when called with just a format. `input [prompt]` reads a line from stdin.
-- **HTTP:** `http:get url [headers]`, `http:post url body [headers]` — headers is an object; delegates to `curl` (bundled with Windows 10 1803+, install via package manager elsewhere)
+- **HTTP:** `http:get url [headers] [opts]`, `http:post url body [headers] [opts]` — headers + opts are objects. `opts` keys: `verify-ssl`, `follow-redirects`, `max-redirects`, `timeout`, `user-agent`. Default build shells out to `curl` (bundled with Windows 10 1803+); build with `LIBCURL=1` to link libcurl directly and drop the binary dependency. Env `Z_HTTP_INSECURE=1` forces `verify-ssl` off globally.
 - **Dates:** `now`, `timestamp`, `format-date`, `parse-date`, `date+`, `date-diff`
 - **CSV:** `csv:parse`, `csv:stringify` (handles quoted fields with embedded commas / quotes / CRLF)
 - **System:** `type`, `assert`, `sleep`, `env`, `exec`, `run`, `argv`, `exit`, `import`, `help`
@@ -258,14 +258,33 @@ Pattern syntax: `. * + ? ^ $ [class] [^class]` plus the shorthands `\d \w \s \D 
                   "X-Request-Id"  17))            ; numbers/booleans stringified
 
 ; POST with custom headers — Content-Type defaults to application/json
-; for object bodies, text/plain for strings, but your override wins.
+; for object bodies, text/plain for strings, application/octet-stream for
+; bytes; your override wins.
 (http:post "https://api.example.com/upload"
            "row1,row2,row3"
            (object "Content-Type" "text/csv"
                    "X-Trace"      "abc"))
+
+; Options object — LAST arg, after headers. Use `null` for no headers.
+(http:get "https://self-signed.example/"
+          null
+          (object "verify-ssl" false        ; skip cert + hostname checks
+                  "timeout"    10           ; seconds
+                  "follow-redirects" true
+                  "user-agent" "my-bot/1"))
+
+; Env-var override: Z_HTTP_INSECURE=1 forces verify-ssl false everywhere.
 ```
 
-Bodies are written to a temp file and passed via `--data-binary @<file>`, so JSON with embedded quotes works on every shell. The temp file is deleted right after the call.
+By default `http:*` shells out to the `curl` binary. POST bodies are written to a temp file and passed via `--data-binary @<file>`, so JSON with embedded quotes works on every shell; the temp file is deleted right after the call.
+
+Build with `make LIBCURL=1` (also `LIBCURL=1` for `z-console`) to link **libcurl** directly — no `curl` binary required, no process spawn per call, cleaner error messages. The Makefile auto-discovers libcurl via `pkg-config libcurl` → `brew --prefix curl` → bare `-lcurl`. Install:
+
+```
+apt-get install libcurl4-openssl-dev
+dnf install libcurl-devel
+brew install curl
+```
 
 ## Optional modules
 

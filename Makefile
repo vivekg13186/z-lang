@@ -144,6 +144,30 @@ ifeq ($(OCR),1)
     LDLIBS += $(TESS_LIBS)
 endif
 
+# Enable with `make LIBCURL=1`. Links libcurl directly instead of shelling
+# out to the `curl` binary. Same http:get / http:post signatures; the opts
+# object adds verify-ssl / follow-redirects / timeout / user-agent keys.
+#   apt-get install libcurl4-openssl-dev
+#   brew install curl   # pkg-config sees libcurl
+#
+# Discovery: pkg-config libcurl  →  brew --prefix curl  →  bare -lcurl
+LIBCURL ?= 0
+ifeq ($(LIBCURL),1)
+    CURL_CFLAGS := $(shell pkg-config --cflags libcurl 2>/dev/null)
+    CURL_LIBS   := $(shell pkg-config --libs   libcurl 2>/dev/null)
+    ifeq ($(strip $(CURL_CFLAGS) $(CURL_LIBS)),)
+        CURL_PREFIX := $(shell brew --prefix curl 2>/dev/null)
+        ifneq ($(CURL_PREFIX),)
+            CURL_CFLAGS := -I$(CURL_PREFIX)/include
+            CURL_LIBS   := -L$(CURL_PREFIX)/lib -lcurl
+        else
+            CURL_LIBS   := -lcurl
+        endif
+    endif
+    CFLAGS += -DZ_WITH_LIBCURL $(CURL_CFLAGS)
+    LDLIBS += $(CURL_LIBS)
+endif
+
 .PHONY: all clean install test run info zide release deb
 
 # Override on the command line:  make release VERSION=0.2.0
@@ -165,8 +189,9 @@ info:
 	@echo "SQLITE:   $(SQLITE)"
 	@echo "OCR:      $(OCR)"
 	@echo "CV:       $(CV)"
+	@echo "LIBCURL:  $(LIBCURL)"
 
-$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h
+$(BIN): $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h z_http.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS) $(LDLIBS)
@@ -177,7 +202,7 @@ else
 	@ln -sf $(BIN) z
 endif
 
-$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h
+$(IDE_BIN): zide.c $(SRC) z_img.h z_vision.h z_sqlite.h z_ocr.h z_cv.h z_http.h
 ifeq ($(PLATFORM),windows)
 	@if not exist "$(DIST_DIR)" mkdir "$(subst /,\,$(DIST_DIR))"
 	$(CC) $(CFLAGS) zide.c -o $(IDE_BIN) $(LDFLAGS) $(LDLIBS)

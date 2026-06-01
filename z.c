@@ -4483,7 +4483,29 @@ static Value* b_exit(int argc, Value** argv, Env* e) {
     return v_null();
 }
 
-/* ---------- HTTP — shells out to curl to keep core deps at zero ---------- */
+/* ---------- HTTP ----------------------------------------------------------
+ *
+ * Two implementations live here, picked at compile time:
+ *
+ *   default     →  shell out to the `curl` binary (zero build deps)
+ *   LIBCURL=1   →  link against libcurl directly (faster; no curl needed)
+ *
+ * Both honour the same option object as the LAST argument:
+ *
+ *   (http:get  url [headers] [opts])
+ *   (http:post url body [headers] [opts])
+ *
+ * Recognised opts keys:
+ *
+ *   verify-ssl       (bool, default true)   set false to ignore cert errors
+ *   follow-redirects (bool, default false)
+ *   max-redirects    (int,  default 10)     only used with follow-redirects
+ *   timeout          (number; seconds)      0 / absent = no timeout
+ *   user-agent       (string)               override the User-Agent header
+ *
+ * The env var `Z_HTTP_INSECURE=1` forces verify-ssl off globally — handy
+ * when a single misbehaving server affects every call in a script.
+ */
 
 /* case-insensitive ASCII strcmp — used to detect a user-provided Content-Type */
 static int z_strcaseeq(const char* a, const char* b) {
@@ -4494,6 +4516,33 @@ static int z_strcaseeq(const char* a, const char* b) {
         a++; b++;
     }
     return *a == 0 && *b == 0;
+}
+
+/* --- option-object readers (shared by shell-out and libcurl paths) --- */
+
+static int zh_opt_bool(Value* opts, const char* key, int def) {
+    if (!opts || opts->type != V_OBJECT) return def;
+    Value* v = obj_get(&opts->as.obj, key);
+    if (!v || v->type == V_NULL) return def;
+    return is_truthy(v);
+}
+static double zh_opt_num(Value* opts, const char* key, double def) {
+    if (!opts || opts->type != V_OBJECT) return def;
+    Value* v = obj_get(&opts->as.obj, key);
+    if (!v || v->type != V_NUM) return def;
+    return v->as.n;
+}
+static const char* zh_opt_str(Value* opts, const char* key, const char* def) {
+    if (!opts || opts->type != V_OBJECT) return def;
+    Value* v = obj_get(&opts->as.obj, key);
+    if (!v || v->type != V_STR) return def;
+    return v->as.s;
+}
+
+/* env-var Z_HTTP_INSECURE=1 → force verify off everywhere */
+static int zh_env_insecure(void) {
+    const char* v = getenv("Z_HTTP_INSECURE");
+    return v && *v && !(v[0] == '0' && v[1] == 0);
 }
 
 /* Append a -H "key: value" argument to the command being built.
@@ -4545,15 +4594,42 @@ static void http_emit_headers(StrBuf* sb, Value* headers, const char* fn) {
     }
 }
 
-/* (http:get url [headers]) */
-static Value* b_http_get(int argc, Value** argv, Env* e) {
-    if (argc < 1 || argc > 2)
-        z_raise("http:get: expected (http:get url [headers])");
+/* Apply common opts as curl command-line flags. */
+static void http_emit_opts(StrBuf* sb, Value* opts) {
+    int verify = zh_opt_bool(opts, "verify-ssl", 1);
+    if (zh_env_insecure()) verify = 0;
+    if (!verify) sb_puts(sb, " -k");
+    if (zh_opt_bool(opts, "follow-redirects", 0)) {
+        sb_puts(sb, " -L");
+        long mr = (long)zh_opt_num(opts, "max-redirects", 10);
+        char buf[32]; snprintf(buf, sizeof(buf), " --max-redirs %ld", mr);
+        sb_puts(sb, buf);
+    }
+    double timeout = zh_opt_num(opts, "timeout", 0);
+    if (timeout > 0) {
+        char buf[48]; snprintf(buf, sizeof(buf), " --max-time %g", timeout);
+        sb_puts(sb, buf);
+    }
+    const char* ua = zh_opt_str(opts, "user-agent", NULL);
+    if (ua) {
+        if (strchr(ua, '"')) z_raise("http: user-agent may not contain a double quote");
+        sb_puts(sb, " -A \"");
+        sb_puts(sb, ua);
+        sb_putc(sb, '"');
+    }
+}
+
+/* (http:get url [headers] [opts]) — shell-out implementation */
+static Value* b_http_get_shell(int argc, Value** argv, Env* e) {
+    if (argc < 1 || argc > 3)
+        z_raise("http:get: expected (http:get url [headers] [opts])");
     const char* url = str_arg(argv[0], "http:get");
     Value* headers = argc >= 2 ? argv[1] : NULL;
+    Value* opts    = argc >= 3 ? argv[2] : NULL;
 
     StrBuf sb; sb_init(&sb);
     sb_puts(&sb, "curl -sS");
+    http_emit_opts(&sb, opts);
     http_emit_headers(&sb, headers, "http:get");
     sb_puts(&sb, " \"");
     sb_puts(&sb, url);
@@ -4575,29 +4651,36 @@ static const char* z_tmp_dir(void) {
 #endif
 }
 
-/* (http:post url body [headers])
+/* (http:post url body [headers] [opts]) — shell-out implementation
  *   body string  → sent verbatim; default Content-Type: text/plain
  *   body object  → JSON-stringified; default Content-Type: application/json
  * User-provided Content-Type in headers wins.
  *
  * Body is written to a temp file and passed to curl via --data-binary @<file>,
  * so arbitrary content (JSON with quotes, binary data) works on every shell. */
-static Value* b_http_post(int argc, Value** argv, Env* e) {
-    if (argc < 2 || argc > 3)
-        z_raise("http:post: expected (http:post url body [headers])");
+static Value* b_http_post_shell(int argc, Value** argv, Env* e) {
+    if (argc < 2 || argc > 4)
+        z_raise("http:post: expected (http:post url body [headers] [opts])");
     const char* url = str_arg(argv[0], "http:post");
     Value* body    = argv[1];
     Value* headers = argc >= 3 ? argv[2] : NULL;
+    Value* opts    = argc >= 4 ? argv[3] : NULL;
 
     /* Stringify body. */
     const char* body_str;
+    size_t body_len;
     Value* owned = NULL;
     if (body->type == V_STR) {
         body_str = body->as.s;
+        body_len = strlen(body_str);
+    } else if (body->type == V_BYTES) {
+        body_str = (const char*)body->as.bytes.data;
+        body_len = body->as.bytes.len;
     } else {
         Value* json_args[1] = { body };
         owned = b_json_stringify(1, json_args, e);
         body_str = owned->as.s;
+        body_len = strlen(body_str);
     }
 
     /* Write body to a temp file. */
@@ -4606,16 +4689,19 @@ static Value* b_http_post(int argc, Value** argv, Env* e) {
              z_tmp_dir(), (int)time(NULL), rand());
     FILE* tf = fopen(tmp_path, "wb");
     if (!tf) z_raise("http:post: cannot create temp file '%s'", tmp_path);
-    if (*body_str) fwrite(body_str, 1, strlen(body_str), tf);
+    if (body_len) fwrite(body_str, 1, body_len, tf);
     fclose(tf);
 
     StrBuf sb; sb_init(&sb);
     sb_puts(&sb, "curl -sS -X POST");
+    http_emit_opts(&sb, opts);
 
     /* Default Content-Type only if the user didn't supply one. */
     if (!http_has_content_type(headers)) {
         if (body->type == V_STR)
             sb_puts(&sb, " -H \"Content-Type: text/plain\"");
+        else if (body->type == V_BYTES)
+            sb_puts(&sb, " -H \"Content-Type: application/octet-stream\"");
         else
             sb_puts(&sb, " -H \"Content-Type: application/json\"");
     }
@@ -4631,6 +4717,27 @@ static Value* b_http_post(int argc, Value** argv, Env* e) {
     Value* result = b_exec(1, cmd_arg, e);
     remove(tmp_path);
     return result;
+}
+
+/* Optional libcurl path — defines b_http_get_libcurl / b_http_post_libcurl
+ * when -DZ_WITH_LIBCURL is set at compile time. */
+#include "z_http.h"
+
+/* Dispatch wrappers: built-in registration goes through these so the same
+ * `http:get` symbol picks up the right implementation based on the build. */
+static Value* b_http_get(int argc, Value** argv, Env* e) {
+#ifdef Z_WITH_LIBCURL
+    return b_http_get_libcurl(argc, argv, e);
+#else
+    return b_http_get_shell(argc, argv, e);
+#endif
+}
+static Value* b_http_post(int argc, Value** argv, Env* e) {
+#ifdef Z_WITH_LIBCURL
+    return b_http_post_libcurl(argc, argv, e);
+#else
+    return b_http_post_shell(argc, argv, e);
+#endif
 }
 
 /* ---------- import ---------- */
@@ -4861,10 +4968,22 @@ static const HelpTopic g_help_topics[] = {
       "  (scanf fmt [input])       → array; reads stdin if input omitted\n"
       "  (input [prompt])          → line of stdin (optional prompt)\n"
     },
-    { "http", "HTTP (via curl)",
-      "  (http:get url [headers])      → response body\n"
-      "  (http:post url body [headers])  body: object → JSON, string → raw\n"
-      "  headers: optional object, e.g. (object \"Authorization\" \"Bearer ...\")\n"
+    { "http",
+#ifdef Z_WITH_LIBCURL
+      "HTTP (via libcurl)",
+#else
+      "HTTP (shells out to curl; build with LIBCURL=1 to link libcurl)",
+#endif
+      "  (http:get  url [headers] [opts])       → response body\n"
+      "  (http:post url body [headers] [opts])  body: string|bytes|object\n"
+      "  headers: object, e.g. (object \"Authorization\" \"Bearer ...\")\n"
+      "  opts:    object — recognised keys:\n"
+      "    verify-ssl       bool (default true)  set false to skip cert check\n"
+      "    follow-redirects bool (default false)\n"
+      "    max-redirects    int  (default 10)\n"
+      "    timeout          seconds (0 = none)\n"
+      "    user-agent       string\n"
+      "  env: Z_HTTP_INSECURE=1  forces verify-ssl off globally\n"
     },
     { "system", "system",
       "  (now)                     unix seconds, float\n"

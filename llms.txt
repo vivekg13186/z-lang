@@ -377,7 +377,14 @@ Hashes return lowercase hex digests (32 / 64 / 128 chars). `encrypt` is a
 - `url:encode`, `url:decode`, `url:build` (object → query string)
 - `zip:create`, `zip:extract` (need `zip` / `unzip` on PATH)
 - `tar:create`, `tar:extract` (handle `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`)
-- `http:get url [headers]`, `http:post url body [headers]` — delegates to `curl`
+- `http:get url [headers] [opts]`, `http:post url body [headers] [opts]`
+  - default build shells out to the `curl` binary
+  - `make LIBCURL=1` links libcurl directly (no curl binary required)
+  - `opts` (last arg, object): `verify-ssl` (default true), `follow-redirects`,
+    `max-redirects`, `timeout` (seconds), `user-agent`
+  - env `Z_HTTP_INSECURE=1` forces `verify-ssl` off globally
+  - body may be string, bytes, or object (object → JSON-stringified)
+  - example: `(http:get url null (object "verify-ssl" false "timeout" 5))`
 
 ### Parsing / input
 - `scanf "fmt" [input]` — `%d %f %s %c` and literal text → array of values.

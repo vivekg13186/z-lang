@@ -236,8 +236,13 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | --- | --- |
 | `http:get` | `(http:get "https://example.com")` |
 | `http:get` + headers | `(http:get url (object "Authorization" "Bearer x"))` |
+| `http:get` + opts | `(http:get url null (object "verify-ssl" false "timeout" 10))` |
 | `http:post` | `(http:post url (object "k" "v"))` |
 | `http:post` + headers | `(http:post url body (object "X-Trace" "abc"))` |
+| ignore SSL globally | `Z_HTTP_INSECURE=1 z script.z` |
+| link libcurl | `make LIBCURL=1` — no `curl` binary needed |
+
+`opts` keys (last-arg object): `verify-ssl`, `follow-redirects`, `max-redirects`, `timeout`, `user-agent`.
 
 ## System
 
