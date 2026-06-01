@@ -53,7 +53,7 @@ DIST_DIR := dist/$(PLATFORM)_$(ARCH)
 BIN      := $(DIST_DIR)/z$(EXT)
 IDE_BIN  := $(DIST_DIR)/zide$(EXT)
 
-CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-unused-function
+CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-result -Wno-unused-function -Wno-stringop-truncation
 LDFLAGS ?=
 
 # --- Optional modules ----------------------------------------------------

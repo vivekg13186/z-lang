@@ -6,12 +6,16 @@
  * exposes — eval, the environment, builtins, persistent history, and the
  * raw-mode terminal helpers — is reused directly.
  *
- * Features over the plain `z` REPL:
+ * UI is patterned after z-console (the raylib GUI), brought to the terminal:
+ *
+ *   • Jupyter-style numbered cells:  In [N]>   and   Out [N]=
+ *   • thin divider line between cells
  *   • live syntax highlighting as you type
- *   • Tab autocompletion of builtins, special forms, and your own variables
- *   • bracket-aware multi-line input with a continuation prompt
- *   • arrow-key history (shared ~/.z_history) and in-line editing
- *   • `help` / `?` cheat sheet, `:q` to quit
+ *   • bracket-match highlight when the cursor sits next to ( or )
+ *   • inline signature hint as ghost-text after typing `(funcname `
+ *   • dropdown autocomplete popup (arrow keys + Tab/Enter to accept, Esc to cancel)
+ *   • bracket-aware multi-line input with continuation prompt
+ *   • arrow-key history (shared ~/.z_history), `help` / `?`, `:q` to quit
  *
  * Build:
  *   cc -O2 -std=c99 zide.c -o zide -lm
@@ -38,7 +42,11 @@ static int   ZIDE_COLOR = 0;
 #define C_PAREN   "\x1b[2m"    /* dim     — brackets */
 #define C_LITERAL "\x1b[33m"   /* yellow  — true/false/null */
 #define C_PROMPT  "\x1b[1;36m" /* bold cyan */
+#define C_OUTPROMPT "\x1b[1;35m" /* bold magenta — Out [N]= */
 #define C_HINT    "\x1b[90m"
+#define C_MATCH   "\x1b[7;33m" /* inverse yellow — bracket match */
+#define C_DIVIDER "\x1b[38;5;238m"   /* very dark gray — cell divider */
+#define C_SELECT  "\x1b[7m"    /* inverse — popup selection */
 
 static const char* ZIDE_FORMS[] = {
     "do", "if", "when", "unless", "cond", "let",
@@ -60,9 +68,161 @@ static const char* zide_classify(const char* tok, Env* env) {
     return "";  /* unknown symbol — leave at terminal default */
 }
 
-/* Emit `buf` to stdout with syntax colours. Colour codes don't advance the
- * visible cursor, so downstream cursor math by visible columns still works. */
-static void zide_emit_colored(const char* buf, size_t len, Env* env) {
+/* ============================================================
+ * Signature table — pulled from g_help_topics at startup so we
+ * can show ghost-text hints after `(funcname ` is typed.
+ * ============================================================ */
+
+typedef struct { char* name; char* signature; char* desc; } SigEntry;
+static SigEntry* g_sigs   = NULL;
+static int       g_sigs_n = 0;
+static int       g_sigs_c = 0;
+
+static void zide_sig_push(const char* name, const char* sig, const char* desc) {
+    for (int i = 0; i < g_sigs_n; i++)
+        if (strcmp(g_sigs[i].name, name) == 0) return;   /* keep first */
+    if (g_sigs_n + 1 > g_sigs_c) {
+        g_sigs_c = g_sigs_c ? g_sigs_c * 2 : 64;
+        g_sigs = (SigEntry*)realloc(g_sigs, g_sigs_c * sizeof(SigEntry));
+    }
+    g_sigs[g_sigs_n].name      = str_dup(name);
+    g_sigs[g_sigs_n].signature = str_dup(sig);
+    g_sigs[g_sigs_n].desc      = str_dup(desc ? desc : "");
+    g_sigs_n++;
+}
+
+/* Parse one body line of the form:  "  (name args)   description"
+ * Whitespace-only or non-paren lines are ignored. */
+static void zide_sig_parse_line(const char* line, size_t len) {
+    size_t i = 0;
+    while (i < len && (line[i] == ' ' || line[i] == '\t')) i++;
+    if (i >= len || line[i] != '(') return;
+    size_t open = i;
+    int depth = 0;
+    size_t close = open;
+    for (; close < len; close++) {
+        if (line[close] == '(') depth++;
+        else if (line[close] == ')') { depth--; if (depth == 0) { close++; break; } }
+    }
+    if (depth != 0) return;
+    /* Extract function name = first symbol after '(' */
+    size_t ns = open + 1;
+    while (ns < close && (line[ns] == ' ')) ns++;
+    size_t ne = ns;
+    while (ne < close && line[ne] != ' ' && line[ne] != ')') ne++;
+    if (ne == ns) return;
+    char name[128];
+    size_t nlen = ne - ns; if (nlen >= sizeof(name)) nlen = sizeof(name)-1;
+    memcpy(name, line + ns, nlen); name[nlen] = 0;
+    /* Signature = the whole "(...)" text */
+    char sig[256];
+    size_t slen = close - open; if (slen >= sizeof(sig)) slen = sizeof(sig)-1;
+    memcpy(sig, line + open, slen); sig[slen] = 0;
+    /* Description = remainder of the line, trimmed */
+    size_t d = close;
+    while (d < len && (line[d] == ' ' || line[d] == '\t')) d++;
+    char desc[256];
+    size_t dlen = len - d; if (dlen >= sizeof(desc)) dlen = sizeof(desc)-1;
+    memcpy(desc, line + d, dlen); desc[dlen] = 0;
+    /* Trim trailing whitespace from desc */
+    while (dlen && (desc[dlen-1] == ' ' || desc[dlen-1] == '\t' || desc[dlen-1] == '\r')) desc[--dlen] = 0;
+    zide_sig_push(name, sig, desc);
+}
+
+static void zide_build_signatures(void) {
+    for (size_t t = 0; t < HELP_TOPIC_COUNT; t++) {
+        const char* body = g_help_topics[t].body;
+        if (!body) continue;
+        size_t p = 0, total = strlen(body);
+        while (p < total) {
+            size_t q = p;
+            while (q < total && body[q] != '\n') q++;
+            zide_sig_parse_line(body + p, q - p);
+            p = (q < total) ? q + 1 : q;
+        }
+    }
+}
+
+static const SigEntry* zide_sig_find(const char* name) {
+    for (int i = 0; i < g_sigs_n; i++)
+        if (strcmp(g_sigs[i].name, name) == 0) return &g_sigs[i];
+    return NULL;
+}
+
+/* ============================================================
+ * Bracket-match scan — returns the index of the matching bracket
+ * for the bracket at position `idx`, or -1 if not balanced or
+ * `idx` doesn't sit on a bracket. Skips brackets inside strings
+ * and line comments.
+ * ============================================================ */
+
+static int zide_in_string_or_comment(const char* buf, size_t len, size_t at) {
+    int in_str = 0;
+    for (size_t i = 0; i < at && i < len; i++) {
+        char c = buf[i];
+        if (in_str) {
+            if (c == '\\' && i + 1 < len) { i++; continue; }
+            if (c == '"') in_str = 0;
+        } else {
+            if (c == '"') in_str = 1;
+            else if (c == ';') { while (i < at && i < len && buf[i] != '\n') i++; }
+        }
+    }
+    return in_str;
+}
+
+static int zide_match_bracket_at(const char* buf, size_t len, size_t idx) {
+    if (idx >= len) return -1;
+    char c = buf[idx];
+    int open_c, close_c, dir;
+    if      (c == '(' || c == '[') { open_c = c; close_c = (c == '(' ? ')' : ']'); dir = +1; }
+    else if (c == ')' || c == ']') { close_c = c; open_c  = (c == ')' ? '(' : '['); dir = -1; }
+    else return -1;
+    if (zide_in_string_or_comment(buf, len, idx)) return -1;
+    int depth = 0;
+    for (size_t i = idx; ; i += (dir > 0 ? 1 : (size_t)-1)) {
+        if (dir > 0 && i >= len) return -1;
+        if (dir < 0 && i == (size_t)-1) return -1;
+        char ch = buf[i];
+        if (!zide_in_string_or_comment(buf, len, i)) {
+            if (ch == (dir > 0 ? open_c  : close_c)) depth++;
+            else if (ch == (dir > 0 ? close_c : open_c )) {
+                depth--;
+                if (depth == 0) return (int)i;
+            }
+        }
+        if (dir < 0 && i == 0) return -1;
+    }
+}
+
+/* Given cursor `pos`, choose which bracket (if any) to highlight as
+ * the "current" one. Mimics editor behaviour: prefers the bracket
+ * just before the cursor, then the one under it. Returns the pair
+ * via out args, or both -1 if nothing to highlight. */
+static void zide_bracket_pair(const char* buf, size_t len, size_t pos,
+                              int* a, int* b) {
+    *a = *b = -1;
+    if (pos > 0) {
+        char c = buf[pos-1];
+        if (c == '(' || c == ')' || c == '[' || c == ']') {
+            int m = zide_match_bracket_at(buf, len, pos-1);
+            if (m >= 0) { *a = (int)(pos-1); *b = m; return; }
+        }
+    }
+    if (pos < len) {
+        char c = buf[pos];
+        if (c == '(' || c == ')' || c == '[' || c == ']') {
+            int m = zide_match_bracket_at(buf, len, pos);
+            if (m >= 0) { *a = (int)pos; *b = m; return; }
+        }
+    }
+}
+
+/* ============================================================
+ * Coloured emit with optional bracket-pair highlight
+ * ============================================================ */
+
+static void zide_emit_colored(const char* buf, size_t len, Env* env, int mb1, int mb2) {
     if (!ZIDE_COLOR) { fwrite(buf, 1, len, stdout); return; }
     size_t i = 0;
     while (i < len) {
@@ -112,7 +272,8 @@ static void zide_emit_colored(const char* buf, size_t len, Env* env) {
             continue;
         }
         if (c == '(' || c == ')' || c == '[' || c == ']') {
-            fputs(C_PAREN, stdout);
+            int is_match = ((int)i == mb1 || (int)i == mb2);
+            fputs(is_match ? C_MATCH : C_PAREN, stdout);
             fputc(c, stdout);
             fputs(C_RESET, stdout);
             i++;
@@ -137,12 +298,118 @@ static void zide_emit_colored(const char* buf, size_t len, Env* env) {
     }
 }
 
+/* ============================================================
+ * Inline signature hint detection — when the user has just typed
+ * `(name<space>...` and the caret sits inside the arg area but no
+ * complete sub-expression yet, surface the signature as ghost text.
+ * Returns the SigEntry pointer or NULL.
+ * ============================================================ */
+
+static const SigEntry* zide_active_signature(const char* buf, size_t len, size_t pos) {
+    /* Walk backwards counting paren depth, look for the open paren of
+     * the innermost incomplete call surrounding pos. */
+    int depth = 0;
+    size_t i = pos;
+    while (i > 0) {
+        i--;
+        if (zide_in_string_or_comment(buf, len, i)) continue;
+        char c = buf[i];
+        if (c == ')' || c == ']') depth++;
+        else if (c == '(' || c == '[') {
+            if (depth == 0) {
+                /* found enclosing open. Extract name token after it. */
+                if (c != '(') return NULL;
+                size_t ns = i + 1;
+                while (ns < len && buf[ns] == ' ') ns++;
+                size_t ne = ns;
+                while (ne < len && is_sym_cont((unsigned char)buf[ne])) ne++;
+                if (ne == ns) return NULL;
+                if (ne >= len || (buf[ne] != ' ' && buf[ne] != '\n' && buf[ne] != ')')) return NULL;
+                char name[128];
+                size_t nlen = ne - ns; if (nlen >= sizeof(name)) nlen = sizeof(name)-1;
+                memcpy(name, buf + ns, nlen); name[nlen] = 0;
+                return zide_sig_find(name);
+            }
+            depth--;
+        }
+    }
+    return NULL;
+}
+
+/* ============================================================
+ * Renderer — repaints the prompt line with colours, bracket-match
+ * highlight, and an optional inline signature hint. Also clears
+ * any popup lines that may have been drawn below.
+ * ============================================================ */
+
+static int g_popup_lines_drawn = 0;   /* tracks rows printed below prompt */
+
+/* Visible-column width of a UTF-8 string. Counts lead bytes only — UTF-8
+ * continuation bytes (10xxxxxx) take zero columns. The terminal advances
+ * the cursor by COLUMNS per code point, but snprintf / strlen return
+ * BYTES, so without this the cursor move-back math over-counts and the
+ * caret ends up too far left whenever the hint contains chars like →. */
+static size_t zide_visible_width(const char* s, size_t n) {
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c & 0xC0) != 0x80) w++;
+    }
+    return w;
+}
+
+/* Clear popup rows that were drawn below the prompt line.
+ * Uses CSI cursor-down (\x1b[B) instead of '\n' so we never scroll the
+ * terminal — scrolling would shift the prompt off its row and desync
+ * every subsequent cursor calculation. */
+static void zide_clear_popup(void) {
+    if (g_popup_lines_drawn <= 0) return;
+    for (int i = 0; i < g_popup_lines_drawn; i++) {
+        fputs("\x1b[B\r\x1b[2K", stdout);
+    }
+    printf("\x1b[%dA\r", g_popup_lines_drawn);
+    g_popup_lines_drawn = 0;
+}
+
 static void zide_render(const char* prompt, const char* buf, size_t len, size_t pos, Env* env) {
+    int mb1 = -1, mb2 = -1;
+    zide_bracket_pair(buf, len, pos, &mb1, &mb2);
+
+    /* Always go to col 0 first; clear any popup below. */
     fputc('\r', stdout);
+    zide_clear_popup();
     fputs(prompt, stdout);
-    zide_emit_colored(buf, len, env);
+    zide_emit_colored(buf, len, env, mb1, mb2);
     fputs("\x1b[K", stdout);                  /* clear to EOL */
-    if (pos < len) printf("\x1b[%dD", (int)(len - pos));
+
+    /* Inline signature hint after the input. */
+    size_t hint_visible_len = 0;
+    if (ZIDE_COLOR) {
+        const SigEntry* s = zide_active_signature(buf, len, pos);
+        if (s) {
+            char hint[256];
+            int n;
+            if (s->desc && *s->desc)
+                n = snprintf(hint, sizeof(hint), "   %s  %s", s->signature, s->desc);
+            else
+                n = snprintf(hint, sizeof(hint), "   %s", s->signature);
+            if (n > 0) {
+                size_t hlen = (size_t)n;
+                if (hlen >= sizeof(hint)) hlen = sizeof(hint) - 1;
+                fputs(C_HINT, stdout);
+                fputs(hint, stdout);
+                fputs(C_RESET, stdout);
+                hint_visible_len = zide_visible_width(hint, hlen);
+            }
+        }
+    }
+
+    /* Move cursor back from end-of-hint to the caret. Use visible widths
+     * (not byte counts) so multi-byte UTF-8 in the input or hint doesn't
+     * push the cursor too far left. */
+    size_t tail_width = zide_visible_width(buf + pos, len - pos);
+    size_t after = tail_width + hint_visible_len;
+    if (after > 0) printf("\x1b[%zuD", after);
     fflush(stdout);
 }
 
@@ -194,6 +461,97 @@ static size_t zide_common_prefix_len(StrList* l) {
 }
 
 /* ============================================================
+ * Autocomplete popup — opens beneath the prompt, scroll with
+ * Up/Down, accept with Tab/Enter, cancel with Esc or any other
+ * key (the key is re-injected so backspace, characters, etc.
+ * keep flowing). Returns the chosen string (caller owns it via
+ * the StrList) or NULL on cancel. `*reinject` is set to a key
+ * to feed back into the outer loop, or -1.
+ * ============================================================ */
+
+#define POPUP_ROWS 7
+
+/* Draw the popup beneath the current prompt line.
+ *
+ * Uses CSI cursor-down (\x1b[B) for every vertical move so the terminal
+ * never scrolls — scrolling at the screen bottom would shift the prompt
+ * off its row and leave the cursor math permanently wrong (which is what
+ * was happening when Tab was pressed near the bottom).
+ *
+ * If the prompt sits at the very bottom of the visible screen, \x1b[B
+ * is a no-op and the popup is simply invisible — much better than a
+ * scrolled, drifting prompt. */
+static void popup_draw(StrList* cands, int sel, int top) {
+    int rows = cands->len < POPUP_ROWS ? cands->len : POPUP_ROWS;
+    for (int i = 0; i < rows; i++) {
+        fputs("\x1b[B\r\x1b[2K", stdout);
+        int idx = top + i;
+        if (idx >= cands->len) continue;
+        const char* name = cands->items[idx];
+        const SigEntry* s = zide_sig_find(name);
+        int is_sel = (idx == sel);
+        if (is_sel) fputs(ZC(C_SELECT), stdout);
+        printf("  %-18s ", name);
+        if (s) {
+            fputs(is_sel ? "" : ZC(C_HINT), stdout);
+            if (s->desc && *s->desc) printf("%s  %s", s->signature, s->desc);
+            else                     fputs(s->signature, stdout);
+            if (!is_sel) fputs(ZC(C_RESET), stdout);
+        }
+        if (is_sel) fputs(ZC(C_RESET), stdout);
+    }
+    /* Return to the prompt line at col 0. The outer caller (zide_render)
+     * will reposition the cursor at the caret afterwards. */
+    printf("\x1b[%dA\r", rows);
+    fflush(stdout);
+    g_popup_lines_drawn = rows;
+}
+
+/* Returns selected item index, or -1 on cancel.
+ * If a key cancelled by being a normal input (not Esc/arrows), it's
+ * placed in *reinject so the outer loop can act on it. */
+static int popup_run(StrList* cands, const char* prompt, const char* buf,
+                     size_t len, size_t pos, Env* env, int* reinject) {
+    int sel = 0, top = 0;
+    *reinject = -1;
+    popup_draw(cands, sel, top);
+    while (1) {
+        int c = read_key();
+        if (c < 0) { zide_clear_popup(); return -1; }
+        if (c == 27) {
+            int s1 = read_key();
+            if (s1 != '[' && s1 != 'O') { zide_clear_popup(); return -1; }
+            int s2 = read_key();
+            if (s2 < 0) { zide_clear_popup(); return -1; }
+            if (s2 == 'A') { /* up */
+                if (sel > 0) sel--;
+                if (sel < top) top = sel;
+                popup_draw(cands, sel, top);
+                continue;
+            }
+            if (s2 == 'B') { /* down */
+                if (sel < cands->len - 1) sel++;
+                if (sel >= top + POPUP_ROWS) top = sel - POPUP_ROWS + 1;
+                popup_draw(cands, sel, top);
+                continue;
+            }
+            /* other arrow keys cancel */
+            zide_clear_popup();
+            zide_render(prompt, buf, len, pos, env);
+            return -1;
+        }
+        if (c == 9 || c == '\r' || c == '\n') {   /* accept */
+            zide_clear_popup();
+            return sel;
+        }
+        /* anything else: cancel, re-inject character for the outer editor. */
+        zide_clear_popup();
+        *reinject = c;
+        return -1;
+    }
+}
+
+/* ============================================================
  * Line editor
  * ============================================================ */
 
@@ -207,6 +565,13 @@ static void zide_insert(char* buf, size_t* len, size_t* pos, const char* s, size
     *len += sl;
     *pos += sl;
 }
+
+/* Pump one key value `c` through the editor state. Mostly the body of the
+ * old main key loop, factored out so popup_run can feed a cancelled key
+ * back in without recursion. */
+static int zide_dispatch_key(int c, const char* prompt, char* out, size_t outsz,
+                             size_t* plen, size_t* ppos, Env* env,
+                             int* phist_pos, char* saved);
 
 /* Returns 0 = got line, 1 = Ctrl-C (discard), -1 = EOF. */
 static int zide_read_line(const char* prompt, char* out, size_t outsz, Env* env) {
@@ -229,141 +594,208 @@ static int zide_read_line(const char* prompt, char* out, size_t outsz, Env* env)
         int c = read_key();
         if (c < 0) { raw_disable(); return -1; }
 
-        if (c == '\r' || c == '\n') {
+        int rc = zide_dispatch_key(c, prompt, out, outsz, &len, &pos, env, &hist_pos, saved);
+        if (rc == 0) continue;             /* keep editing */
+        if (rc == 10) {                    /* got line */
             out[len] = 0;
             fputs("\r\n", stdout); fflush(stdout);
             raw_disable();
             return 0;
         }
-        if (c == 3) {                          /* Ctrl-C */
+        if (rc == 11) {                    /* Ctrl-C */
             fputs("^C\r\n", stdout); fflush(stdout);
             out[0] = 0; raw_disable();
             return 1;
         }
-        if (c == 4) {                          /* Ctrl-D */
-            if (len == 0) { fputs("\r\n", stdout); fflush(stdout); raw_disable(); return -1; }
-            if (pos < len) { memmove(out+pos, out+pos+1, len-pos); len--; zide_render(prompt, out, len, pos, env); }
-            continue;
-        }
-        if (c == 127 || c == 8) {              /* Backspace */
-            if (pos > 0) {
-                memmove(out+pos-1, out+pos, len-pos+1);
-                pos--; len--;
-                zide_render(prompt, out, len, pos, env);
-            }
-            continue;
-        }
-        if (c == 9) {                          /* Tab — autocomplete */
-            size_t ws = pos;
-            while (ws > 0 && is_sym_cont((unsigned char)out[ws-1])) ws--;
-            if (ws == pos) continue;           /* nothing to complete */
-            char prefix[256];
-            size_t plen = pos - ws;
-            if (plen >= sizeof(prefix)) plen = sizeof(prefix)-1;
-            memcpy(prefix, out+ws, plen); prefix[plen] = 0;
-
-            StrList cands = {0};
-            zide_candidates(env, prefix, &cands);
-            if (cands.len == 0) { sl_free(&cands); continue; }
-
-            size_t common = zide_common_prefix_len(&cands);
-            if (common > plen) {
-                char add[256];
-                size_t addn = common - plen;
-                if (addn >= sizeof(add)) addn = sizeof(add)-1;
-                memcpy(add, cands.items[0] + plen, addn);
-                add[addn] = 0;
-                zide_insert(out, &len, &pos, add, outsz);
-                zide_render(prompt, out, len, pos, env);
-            } else if (cands.len > 1) {
-                /* Show the options, then redraw. */
-                fputs("\r\n", stdout);
-                fputs(ZC(C_HINT), stdout);
-                for (int i = 0; i < cands.len && i < 40; i++)
-                    printf("%s  ", cands.items[i]);
-                fputs(ZC(C_RESET), stdout);
-                fputs("\r\n", stdout);
-                zide_render(prompt, out, len, pos, env);
-            }
-            sl_free(&cands);
-            continue;
-        }
-        if (c == 1)  { pos = 0;   zide_render(prompt, out, len, pos, env); continue; } /* Ctrl-A */
-        if (c == 5)  { pos = len; zide_render(prompt, out, len, pos, env); continue; } /* Ctrl-E */
-        if (c == 11) { len = pos; out[len] = 0; zide_render(prompt, out, len, pos, env); continue; } /* Ctrl-K */
-        if (c == 12) { fputs("\x1b[H\x1b[2J", stdout); zide_render(prompt, out, len, pos, env); continue; } /* Ctrl-L */
-
-        if (c == 27) {                         /* ESC — arrow keys */
-            int s1 = read_key();
-            if (s1 != '[' && s1 != 'O') continue;
-            int s2 = read_key();
-            if (s2 < 0) continue;
-            switch (s2) {
-                case 'A':  /* up — older history */
-                    if (hist_pos > 0) {
-                        if (hist_pos == g_history.count) { memcpy(saved, out, len); saved[len] = 0; }
-                        hist_pos--;
-                        const char* l = hist_get(hist_pos);
-                        if (l) { strncpy(out, l, outsz-1); out[outsz-1]=0; len = pos = strlen(out);
-                                 zide_render(prompt, out, len, pos, env); }
-                    }
-                    break;
-                case 'B':  /* down — newer history */
-                    if (hist_pos < g_history.count) {
-                        hist_pos++;
-                        if (hist_pos == g_history.count) { strncpy(out, saved, outsz-1); out[outsz-1]=0; }
-                        else { const char* l = hist_get(hist_pos); if (l) { strncpy(out, l, outsz-1); out[outsz-1]=0; } }
-                        len = pos = strlen(out);
-                        zide_render(prompt, out, len, pos, env);
-                    }
-                    break;
-                case 'C': if (pos < len) { pos++; zide_render(prompt, out, len, pos, env); } break;
-                case 'D': if (pos > 0)  { pos--; zide_render(prompt, out, len, pos, env); } break;
-                case 'H': pos = 0;   zide_render(prompt, out, len, pos, env); break;
-                case 'F': pos = len; zide_render(prompt, out, len, pos, env); break;
-            }
-            continue;
-        }
-
-        if ((c >= 32 && c < 127) || (unsigned char)c >= 128) {
-            if (len + 1 < outsz) {
-                if (pos < len) memmove(out+pos+1, out+pos, len-pos);
-                out[pos++] = (char)c;
-                len++;
-                out[len] = 0;
-                zide_render(prompt, out, len, pos, env);
-            }
-        }
+        if (rc == -1) { raw_disable(); return -1; }
     }
 }
 
+/* Returns:
+ *    0 = handled, keep editing
+ *   10 = newline (commit line)
+ *   11 = Ctrl-C
+ *   -1 = EOF
+ */
+static int zide_dispatch_key(int c, const char* prompt, char* out, size_t outsz,
+                             size_t* plen, size_t* ppos, Env* env,
+                             int* phist_pos, char* saved) {
+    size_t len = *plen, pos = *ppos;
+    int hist_pos = *phist_pos;
+
+    if (c == '\r' || c == '\n') { *plen = len; *ppos = pos; return 10; }
+    if (c == 3)  { return 11; }            /* Ctrl-C */
+    if (c == 4) {                          /* Ctrl-D */
+        if (len == 0) { fputs("\r\n", stdout); fflush(stdout); return -1; }
+        if (pos < len) { memmove(out+pos, out+pos+1, len-pos); len--; }
+        goto render;
+    }
+    if (c == 127 || c == 8) {              /* Backspace */
+        if (pos > 0) {
+            memmove(out+pos-1, out+pos, len-pos+1);
+            pos--; len--;
+        }
+        goto render;
+    }
+    if (c == 9) {                          /* Tab — popup completion */
+        /* Find the bounds of the symbol the caret is sitting in. We
+         * REPLACE the whole word, not just the part before the cursor —
+         * otherwise pressing Tab in the middle of "prnt" with the caret
+         * after "pr" inserts the completion BEFORE the trailing "nt"
+         * and leaves the cursor in the middle of the joined word. */
+        size_t ws = pos, we = pos;
+        while (ws > 0 && is_sym_cont((unsigned char)out[ws-1])) ws--;
+        while (we < len && is_sym_cont((unsigned char)out[we]))   we++;
+        if (ws == we) goto render;       /* not on a symbol */
+
+        char prefix[256];
+        size_t pl = pos - ws;            /* chars to the LEFT of caret */
+        if (pl >= sizeof(prefix)) pl = sizeof(prefix)-1;
+        memcpy(prefix, out+ws, pl); prefix[pl] = 0;
+
+        StrList cands = {0};
+        zide_candidates(env, prefix, &cands);
+        if (cands.len == 0) { sl_free(&cands); goto render; }
+
+        /* Helper: replace out[ws..we) with `full`, leave caret right after it. */
+        #define ZIDE_REPLACE_WORD(FULL) do {                                  \
+            const char* _full = (FULL);                                       \
+            size_t _flen = strlen(_full);                                     \
+            size_t _word_len = we - ws;                                       \
+            if (len - _word_len + _flen + 1 < outsz) {                        \
+                /* shift the tail to make room for the new word */            \
+                memmove(out + ws + _flen, out + we, len - we + 1);            \
+                memcpy(out + ws, _full, _flen);                               \
+                len = len - _word_len + _flen;                                \
+                pos = ws + _flen;                                             \
+                we  = ws + _flen;                                             \
+            }                                                                 \
+        } while (0)
+
+        /* If exactly one candidate, just complete and we're done. */
+        if (cands.len == 1) {
+            ZIDE_REPLACE_WORD(cands.items[0]);
+            sl_free(&cands);
+            goto render;
+        }
+        /* Otherwise, first extend to the common prefix then open popup. */
+        size_t common = zide_common_prefix_len(&cands);
+        if (common > pl) {
+            char common_buf[256];
+            if (common >= sizeof(common_buf)) common = sizeof(common_buf)-1;
+            memcpy(common_buf, cands.items[0], common); common_buf[common] = 0;
+            ZIDE_REPLACE_WORD(common_buf);
+            *plen = len; *ppos = pos;
+            zide_render(prompt, out, len, pos, env);
+        }
+        /* Open the popup. */
+        int reinject = -1;
+        int sel = popup_run(&cands, prompt, out, len, pos, env, &reinject);
+        if (sel >= 0) {
+            ZIDE_REPLACE_WORD(cands.items[sel]);
+        }
+        sl_free(&cands);
+        #undef ZIDE_REPLACE_WORD
+        *plen = len; *ppos = pos;
+        zide_render(prompt, out, len, pos, env);
+        if (reinject >= 0) {
+            return zide_dispatch_key(reinject, prompt, out, outsz, plen, ppos, env, phist_pos, saved);
+        }
+        return 0;
+    }
+    if (c == 1)  { pos = 0;   goto render; } /* Ctrl-A */
+    if (c == 5)  { pos = len; goto render; } /* Ctrl-E */
+    if (c == 11) { len = pos; out[len] = 0; goto render; } /* Ctrl-K */
+    if (c == 12) { fputs("\x1b[H\x1b[2J", stdout); goto render; } /* Ctrl-L */
+
+    if (c == 27) {                         /* ESC — arrow keys */
+        int s1 = read_key();
+        if (s1 != '[' && s1 != 'O') goto render;
+        int s2 = read_key();
+        if (s2 < 0) goto render;
+        switch (s2) {
+            case 'A':  /* up — older history */
+                if (hist_pos > 0) {
+                    if (hist_pos == g_history.count) { memcpy(saved, out, len); saved[len] = 0; }
+                    hist_pos--;
+                    const char* l = hist_get(hist_pos);
+                    if (l) { strncpy(out, l, outsz-1); out[outsz-1]=0; len = pos = strlen(out); }
+                }
+                break;
+            case 'B':  /* down — newer history */
+                if (hist_pos < g_history.count) {
+                    hist_pos++;
+                    if (hist_pos == g_history.count) { strncpy(out, saved, outsz-1); out[outsz-1]=0; }
+                    else { const char* l = hist_get(hist_pos); if (l) { strncpy(out, l, outsz-1); out[outsz-1]=0; } }
+                    len = pos = strlen(out);
+                }
+                break;
+            case 'C': if (pos < len) pos++; break;
+            case 'D': if (pos > 0)   pos--; break;
+            case 'H': pos = 0;   break;
+            case 'F': pos = len; break;
+        }
+        goto render;
+    }
+
+    if ((c >= 32 && c < 127) || (unsigned char)c >= 128) {
+        if (len + 1 < outsz) {
+            if (pos < len) memmove(out+pos+1, out+pos, len-pos);
+            out[pos++] = (char)c;
+            len++;
+            out[len] = 0;
+        }
+    }
+
+render:
+    *plen = len; *ppos = pos; *phist_pos = hist_pos;
+    zide_render(prompt, out, len, pos, env);
+    return 0;
+}
+
 /* ============================================================
- * REPL loop
+ * REPL loop — Jupyter-style numbered cells with dividers.
  * ============================================================ */
+
+/* Print a thin horizontal rule that spans some sensible width. */
+static void zide_divider(void) {
+    if (!ZIDE_COLOR) { fputs("\n", stdout); return; }
+    int width = 64;
+    const char* env_cols = getenv("COLUMNS");
+    if (env_cols && *env_cols) { int v = atoi(env_cols); if (v > 20 && v < 200) width = v; }
+    fputs(C_DIVIDER, stdout);
+    for (int i = 0; i < width; i++) fputc('-', stdout);
+    fputs(C_RESET, stdout);
+    fputc('\n', stdout);
+}
 
 static void zide_repl(Env* env) {
     char line[ZIDE_LINE_MAX];
     static char acc[65536]; acc[0] = '\0';
     volatile int balance = 0;
+    volatile int cell = 1;
 
     ZIDE_COLOR = z_stdout_is_tty();
     hist_load();
+    zide_build_signatures();
 
     if (ZIDE_COLOR) {
         printf("%szide %s%s — enhanced REPL for z\n", C_PROMPT, Z_VERSION, C_RESET);
     } else {
         printf("zide %s — enhanced REPL for z\n", Z_VERSION);
     }
-    printf("%ssyntax colouring · Tab completes · arrows for history · `help` for the cheat sheet · :q to quit%s\n",
+    printf("%snumbered cells · bracket match · ghost-text signatures · Tab popup · arrows for history · :q to quit%s\n",
            ZC(C_HINT), ZC(C_RESET));
 
     while (1) {
         const char* prompt;
         char pbuf[64];
         if (balance > 0) {
-            snprintf(pbuf, sizeof(pbuf), "%s...%s ", ZC(C_PROMPT), ZC(C_RESET));
+            /* Continuation prompt — visually aligned with the cell prompt. */
+            snprintf(pbuf, sizeof(pbuf), "%s   ...   %s  ", ZC(C_PROMPT), ZC(C_RESET));
         } else {
-            snprintf(pbuf, sizeof(pbuf), "%szide>%s ", ZC(C_PROMPT), ZC(C_RESET));
+            zide_divider();
+            snprintf(pbuf, sizeof(pbuf), "%sIn [%d]>%s ", ZC(C_PROMPT), cell, ZC(C_RESET));
         }
         prompt = pbuf;
 
@@ -405,9 +837,8 @@ static void zide_repl(Env* env) {
             Value* r = run_source(acc, env);
             g_err_top = f.prev;
             if (r && r->type != V_NULL) {
-                if (ZIDE_COLOR) fputs(C_HINT, stdout);
-                fputs("=> ", stdout);
-                if (ZIDE_COLOR) fputs(C_RESET, stdout);
+                if (ZIDE_COLOR) printf("%sOut [%d]=%s ", C_OUTPROMPT, cell, C_RESET);
+                else            printf("Out [%d]= ", cell);
                 print_value(stdout, r, 1);
                 fputc('\n', stdout);
             }
@@ -416,6 +847,7 @@ static void zide_repl(Env* env) {
             fprintf(stderr, "%serror:%s %s\n", ZC("\x1b[31m"), ZC(C_RESET), f.msg);
         }
         acc[0] = '\0';
+        cell++;
     }
 
     hist_save();
