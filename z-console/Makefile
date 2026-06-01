@@ -97,9 +97,30 @@ ifeq ($(LIBCURL),1)
     LDFLAGS += $(CURL_LIBS)
 endif
 
-# raylib via pkg-config
+# --- raylib discovery ---------------------------------------------------
+#
+# 1. pkg-config raylib               — installed via apt / brew / dnf / build
+# 2. brew --prefix raylib            — macOS Homebrew fallback
+# 3. /usr/local + bare -lraylib      — common manual `make install` target
+#
+# If none of those work the top-level rule prints a clear hint pointing
+# at scripts/install-raylib.sh, which builds raylib from source for
+# distros (Ubuntu < 24.04, etc.) that don't ship a -dev package.
 RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
 RAYLIB_LIBS   := $(shell pkg-config --libs   raylib 2>/dev/null)
+ifeq ($(strip $(RAYLIB_CFLAGS) $(RAYLIB_LIBS)),)
+    RAYLIB_PREFIX := $(shell brew --prefix raylib 2>/dev/null)
+    ifneq ($(RAYLIB_PREFIX),)
+        RAYLIB_CFLAGS := -I$(RAYLIB_PREFIX)/include
+        RAYLIB_LIBS   := -L$(RAYLIB_PREFIX)/lib -lraylib
+    else ifneq ($(wildcard /usr/local/include/raylib.h),)
+        RAYLIB_CFLAGS := -I/usr/local/include
+        RAYLIB_LIBS   := -L/usr/local/lib -lraylib
+    else ifneq ($(wildcard /usr/include/raylib.h),)
+        RAYLIB_CFLAGS := -I/usr/include
+        RAYLIB_LIBS   := -lraylib
+    endif
+endif
 CFLAGS  += $(RAYLIB_CFLAGS)
 LDFLAGS += $(RAYLIB_LIBS)
 
@@ -143,9 +164,28 @@ endif
 DIST_DIR := ../dist/$(PLATFORM)_$(ARCH)
 DIST_BIN := $(DIST_DIR)/$(TARGET)$(EXT)
 
-.PHONY: all clean run info
+.PHONY: all clean run info check-raylib
 
-all: $(TARGET) $(DIST_BIN)
+all: check-raylib $(TARGET) $(DIST_BIN)
+
+# Hard-fail with an actionable hint when raylib still isn't found.
+# Triggered before the actual compile so users don't wade through pages
+# of `raylib.h: No such file` output.
+check-raylib:
+	@if [ -z "$(strip $(RAYLIB_CFLAGS) $(RAYLIB_LIBS))" ]; then \
+	    printf '\033[1;31mraylib not found.\033[0m\n'; \
+	    printf '  z-console needs raylib (https://www.raylib.com).\n\n'; \
+	    printf '  Quickest fix:\n'; \
+	    printf '    ../scripts/install-raylib.sh\n\n'; \
+	    printf '  Or install manually:\n'; \
+	    printf '    macOS:                brew install raylib pkg-config\n'; \
+	    printf '    Ubuntu 24.04+:        sudo apt install libraylib-dev pkg-config\n'; \
+	    printf '    Ubuntu 22.04 / older: run ../scripts/install-raylib.sh\n'; \
+	    printf '                           (builds raylib from source — apt has no -dev package there)\n'; \
+	    printf '    Fedora:               sudo dnf install raylib-devel\n'; \
+	    printf '    Arch:                 sudo pacman -S raylib\n\n'; \
+	    exit 1; \
+	fi
 
 info:
 	@echo "platform: $(PLATFORM)"

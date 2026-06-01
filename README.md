@@ -18,6 +18,9 @@ Ships as two binaries:
 - **`z-console`** — an optional raylib-based GUI REPL with the same
   feature set plus inline images, themes, mouse selection, and a
   Ctrl+S session save. Builds out of the `z-console/` folder.
+  Needs raylib — on Ubuntu < 24.04 (or any distro without
+  `libraylib-dev`) run `./scripts/install-raylib.sh` to build it from
+  source in one shot.
 
 Source files use the `.z` extension.
 

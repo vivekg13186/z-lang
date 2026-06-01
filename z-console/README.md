@@ -52,12 +52,28 @@ make
 
 ### Linux (Debian / Ubuntu)
 
+**Ubuntu 24.04 or newer** has raylib in the repo:
+
 ```
 sudo apt-get install libraylib-dev pkg-config
-cd z-console
-make
-./z-console
+cd z-console && make && ./z-console
 ```
+
+**Ubuntu 22.04 / 20.04 (and Debian without raylib in apt)** — raylib
+isn't packaged. Use the bundled helper which falls back to building from
+source after installing the X11/GL/audio dev deps:
+
+```
+./scripts/install-raylib.sh        # builds + installs to /usr/local
+cd z-console && make && ./z-console
+```
+
+`./scripts/install-raylib.sh --from-source` forces the source build
+even on distros that *do* package raylib. `--prefix /some/where`
+installs there instead of `/usr/local`.
+
+**Fedora / RHEL:** `sudo dnf install raylib-devel pkgconf-pkg-config`
+**Arch:** `sudo pacman -S raylib pkgconf`
 
 ### Windows
 
