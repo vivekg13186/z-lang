@@ -21,6 +21,8 @@ Every command with a one-line example. Run any of these in the REPL (`./z` or
 | `fn` | `(fn add (a b) (+ a b))` |
 | `lambda` | `(lambda (x) (* x 2))` |
 | `set` | `(set name "vivek")` |
+| `set` destructure (array) | `(set (a b c) (array 1 2 3))` → `a=1, b=2, c=3` |
+| `set` destructure (object) | `(set (name age) (object "name" "v" "age" 30))` |
 | `try` / `catch` | `(try (/ 1 0) (catch e (print e)))` |
 | `quote` | `(quote (a b c))` |
 | `and` | `(and true false)` |

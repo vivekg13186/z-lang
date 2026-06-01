@@ -1225,8 +1225,53 @@ static Value* eval_fn(VList* args, Env* env, int anonymous) {
 }
 
 static Value* eval_set(VList* args, Env* env) {
-    if (args->len != 2) z_raise("set: expected (set name value)");
+    if (args->len != 2)
+        z_raise("set: expected (set name value), (set (a b c) value), or (set [a b c] value)");
     Value* target = args->items[0];
+
+    /* Destructure: target is a literal list of symbol names.
+     *
+     *   (set (a b c) [1 2 3])                    → a=1, b=2, c=3
+     *   (set [a b c] [1 2 3])                    → same (square brackets work too)
+     *   (set (a b c) (object "a" 1 "b" 2 "c" 3)) → by-key from an object
+     *
+     * From an array the slots are filled positionally; missing slots become
+     * null. From an object the slot NAME is used to look up the key; absent
+     * keys become null. Mirrors Python `a, b, c = obj` style. */
+    if (target->type == V_LIST) {
+        VList* pl = &target->as.list;
+        size_t start = 0;
+        /* `[a b c]` parses as (array a b c) — skip that head if present. */
+        if (pl->len >= 1 && pl->items[0]->type == V_SYM
+            && strcmp(pl->items[0]->as.s, "array") == 0) {
+            start = 1;
+        }
+        size_t n = (pl->len > start) ? pl->len - start : 0;
+        if (n == 0) z_raise("set: empty destructure pattern");
+        for (size_t i = 0; i < n; i++) {
+            if (pl->items[start + i]->type != V_SYM)
+                z_raise("set: destructure slot %zu must be a symbol", i + 1);
+        }
+        Value* val = eval(args->items[1], env);
+        if (val->type == V_ARRAY) {
+            for (size_t i = 0; i < n; i++) {
+                const char* name = pl->items[start + i]->as.s;
+                Value* v = (i < val->as.list.len) ? val->as.list.items[i] : v_null();
+                env_assign(env, name, v);
+            }
+        } else if (val->type == V_OBJECT) {
+            for (size_t i = 0; i < n; i++) {
+                const char* name = pl->items[start + i]->as.s;
+                Value* v = obj_get(&val->as.obj, name);
+                env_assign(env, name, v ? v : v_null());
+            }
+        } else {
+            z_raise("set: destructure source must be array or object, got %s",
+                    type_name(val));
+        }
+        return val;
+    }
+
     if (target->type != V_SYM) z_raise("set: first argument must be a symbol");
     Value* val = eval(args->items[1], env);
     /* Support dotted path: foo.bar */
@@ -4833,6 +4878,8 @@ static const HelpTopic g_help_topics[] = {
       "  (fn name (args) body...)  define named function (use `& rest` for variadic)\n"
       "  (lambda (args) body...)   anonymous function\n"
       "  (set name value)          define/assign variable\n"
+      "  (set (a b c) value)       destructure: array → positional, object → by key\n"
+      "  (set [a b c] value)       same, square-bracket syntax\n"
       "  (try body (catch e ...))  catch runtime errors\n"
       "  (and ...) (or ...)        short-circuit logic, also && / ||\n"
       "  (quote x)                 return x unevaluated\n"

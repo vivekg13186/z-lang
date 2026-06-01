@@ -757,6 +757,63 @@ render:
  * REPL loop — Jupyter-style numbered cells with dividers.
  * ============================================================ */
 
+/* ============================================================
+ * Session cells — keep the source of each committed cell so the
+ * user can :save them all to a .z file (same idea as Ctrl+S in
+ * z-console).
+ * ============================================================ */
+
+static char** g_cells   = NULL;
+static int    g_cells_n = 0;
+static int    g_cells_c = 0;
+
+static void zide_cells_push(const char* src) {
+    if (g_cells_n + 1 > g_cells_c) {
+        g_cells_c = g_cells_c ? g_cells_c * 2 : 32;
+        g_cells = (char**)realloc(g_cells, g_cells_c * sizeof(char*));
+    }
+    g_cells[g_cells_n++] = str_dup(src ? src : "");
+}
+
+/* Write all collected cells to `path` as a .z file. `path` may be NULL
+ * or empty — in that case a timestamped default in $HOME is used and the
+ * resolved path is copied into `out_path` for display. Returns 0 on
+ * success, non-zero on error (with an errno-style message in errbuf). */
+static int zide_save_cells(const char* path, char* out_path, size_t out_sz,
+                           char* errbuf, size_t errsz) {
+    char buf[1024];
+    if (!path || !*path) {
+        time_t t = time(NULL); struct tm tmv; localtime_r(&t, &tmv);
+        const char* home = getenv("HOME");
+        snprintf(buf, sizeof(buf),
+                 "%s/.zide_session_%04d%02d%02d_%02d%02d%02d.z",
+                 home ? home : ".",
+                 tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                 tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+        path = buf;
+    }
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        int e = errno;
+        snprintf(errbuf, errsz, "%.300s: %s", path, strerror(e));
+        return -1;
+    }
+    time_t now = time(NULL);
+    fprintf(f, "; zide session — %d cell%s, saved %s",
+            g_cells_n, g_cells_n == 1 ? "" : "s", ctime(&now));
+    for (int i = 0; i < g_cells_n; i++) {
+        const char* src = g_cells[i];
+        fputs(src, f);
+        /* Ensure a blank line separates cells. */
+        size_t L = strlen(src);
+        if (L == 0 || src[L-1] != '\n') fputc('\n', f);
+        fputc('\n', f);
+    }
+    fclose(f);
+    if (out_path && out_sz) { strncpy(out_path, path, out_sz - 1); out_path[out_sz - 1] = 0; }
+    return 0;
+}
+
 /* Print a thin horizontal rule that spans some sensible width. */
 static void zide_divider(void) {
     if (!ZIDE_COLOR) { fputs("\n", stdout); return; }
@@ -784,7 +841,7 @@ static void zide_repl(Env* env) {
     } else {
         printf("zide %s — enhanced REPL for z\n", Z_VERSION);
     }
-    printf("%snumbered cells · bracket match · ghost-text signatures · Tab popup · arrows for history · :q to quit%s\n",
+    printf("%snumbered cells · bracket match · Tab popup · :save [path] writes cells to .z · :q to quit%s\n",
            ZC(C_HINT), ZC(C_RESET));
 
     while (1) {
@@ -815,6 +872,32 @@ static void zide_repl(Env* env) {
             if ((tn == 4 && strncmp(p, "help", 4) == 0) || (tn == 1 && *p == '?')) {
                 strcpy(line, "(help)");
             }
+            /* :save  or  :save path/to/file.z — dump every committed cell. */
+            if (tn >= 5 && strncmp(p, ":save", 5) == 0
+                && (tn == 5 || p[5] == ' ' || p[5] == '\t')) {
+                char path_arg[1024]; path_arg[0] = 0;
+                if (tn > 5) {
+                    const char* a = p + 5;
+                    while (a < end && (*a == ' ' || *a == '\t')) a++;
+                    size_t alen = end - a;
+                    if (alen >= sizeof(path_arg)) alen = sizeof(path_arg) - 1;
+                    memcpy(path_arg, a, alen); path_arg[alen] = 0;
+                }
+                char resolved[1024], errbuf[512];
+                if (zide_save_cells(path_arg, resolved, sizeof(resolved),
+                                    errbuf, sizeof(errbuf)) == 0) {
+                    const char* plural = g_cells_n == 1 ? "" : "s";
+                    if (ZIDE_COLOR) printf("%s; saved %d cell%s → %s%s\n",
+                                           C_HINT, g_cells_n, plural, resolved, C_RESET);
+                    else            printf("; saved %d cell%s -> %s\n",
+                                           g_cells_n, plural, resolved);
+                } else {
+                    fprintf(stderr, "%ssave failed:%s %s\n",
+                            ZC("\x1b[31m"), ZC(C_RESET), errbuf);
+                }
+                acc[0] = '\0'; balance = 0;
+                continue;
+            }
         }
 
         for (char* q = line; *q; q++) {
@@ -828,7 +911,7 @@ static void zide_repl(Env* env) {
         if (balance < 0) { fprintf(stderr, "unbalanced parens\n"); acc[0]=0; balance=0; continue; }
 
         { size_t n = strlen(acc); char sv = 0; if (n && acc[n-1]=='\n'){ sv=acc[n-1]; acc[n-1]=0; }
-          hist_add(acc); if (sv) acc[n-1]=sv; }
+          hist_add(acc); zide_cells_push(acc); if (sv) acc[n-1]=sv; }
 
         ErrFrame f;
         f.prev = g_err_top; f.value = NULL; f.msg[0] = 0;

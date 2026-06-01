@@ -103,7 +103,7 @@ left-to-right like a normal call. The head must be a literal symbol.
 | `for`    | `(for var coll body...)` | `var` is **a bare symbol**, not a list. Iterates arrays and object keys. |
 | `fn`     | `(fn name (params... [& rest]) body...)` | Defines a named function in the current scope. `&` followed by exactly one symbol collects remaining args into an array bound to that name. |
 | `lambda` | `(lambda (params...) body...)` | Anonymous function; returns the function value. |
-| `set`    | `(set name value)` | Assigns up the scope chain. Supports dotted path: `(set user.age 37)`. |
+| `set`    | `(set name value)` | Assigns up the scope chain. Supports dotted path: `(set user.age 37)`. Destructures: `(set (a b c) source)` — when source is an array, slots fill positionally (missing → null); when source is an object, each slot name is looked up as a key (missing → null). `(set [a b c] source)` is the same. |
 | `try`    | `(try body (catch errname handler...))` | Catches z errors raised by builtins or `assert`. |
 | `quote`  | `(quote expr)` | Returns `expr` unevaluated. |
 | `and` / `&&` | `(and a b ...)` | Short-circuit; returns last truthy or `false`. |
